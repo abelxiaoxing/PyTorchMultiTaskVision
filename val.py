@@ -21,7 +21,7 @@ def initialize_model(model_weight_path, model_ema, device):
             model_ema.module.load_state_dict(checkpoint['model_ema'])
             print(f"initialize model_ema success")
         else:
-            model_ema.module.load_state_dict(checkpoint['model'])
+            model_ema.module.load_state_dict(checkpoint['model'].state_dict())
         return model_ema.module,num_classes
     else:
         model= checkpoint["model"]
