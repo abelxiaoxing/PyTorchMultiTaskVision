@@ -95,19 +95,19 @@ def pth2onnx_in_memory(
     device="cuda",
     simplify=False,
 ):
-    # Load the PyTorch model
+    # 加载PyTorch模型
     checkpoint = torch.load(model_weight_path, map_location=device,weights_only=False)
     model = checkpoint["model"]
     model.eval()
     input_shape = checkpoint["input_shape"]
     input = torch.rand(*input_shape).to(device)
 
-    # Export the model to ONNX in memory
+    # 在内存中将模型导出为ONNX
     f = BytesIO()
     torch.onnx.export(model, input, f)
     onnx_model = onnx.load_model_from_string(f.getvalue())
 
-    # Simplify the ONNX model if needed
+    # 如果需要，简化ONNX模型
     if simplify:
         print(f"Simplifying with onnx-simplifier {onnxsim.__version__}.")
         onnx_model, check = onnxsim.simplify(onnx_model)
@@ -123,18 +123,18 @@ def onnx2trt_in_memory(onnx_model, trt_output_path):
     network = builder.create_network(EXPLICIT_BATCH)
     parser = trt.OnnxParser(network, TRT_LOGGER)
 
-    # Parse the ONNX model from memory
+    # 从内存中解析ONNX模型
     success = parser.parse(onnx_model.SerializeToString())
     for idx in range(parser.num_errors):
         print(parser.get_error(idx))
     if not success:
         raise RuntimeError("Failed to parse the ONNX model")
 
-    # Create builder configuration
+    # 创建构建器配置
     config = builder.create_builder_config()
     config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 20)
 
-    # Build the TensorRT engine
+    # 构建TensorRT引擎
     serialized_engine = builder.build_serialized_network(network, config)
     with open(trt_output_path, "wb") as f:
         f.write(serialized_engine)

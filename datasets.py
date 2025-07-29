@@ -110,8 +110,6 @@ def build_transform(is_train, args):
             auto_augment=args.aa,
             interpolation="bicubic",
             re_prob=args.reprob,
-            re_mode=args.remode,
-            re_count=args.recount,
         )
         return transform
     else :

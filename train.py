@@ -33,7 +33,7 @@ def get_args_parser():
     parser = argparse.ArgumentParser(
         "Training and evaluation script for image classification", add_help=False
     )
-    parser.add_argument("--batch_size", default=64, type=int)
+    parser.add_argument("--batch_size", default=16, type=int)
     parser.add_argument("--epochs", default=100, type=int)
     parser.add_argument("--update_freq", default=1, type=int)
     # Model parameters
@@ -45,52 +45,36 @@ def get_args_parser():
     parser.add_argument("--model_ema", type=str2bool, default=False)
 
     # Optimization parameters
-    parser.add_argument("--opt", default="adamw", type=str)
-    parser.add_argument("--opt_eps", default=1e-8, type=float)
-    parser.add_argument("--opt_betas", default=None, type=float)
+    parser.add_argument("--opt", default="lion", type=str)
     parser.add_argument("--clip_grad", type=float, default=None,help='梯度裁剪')
     parser.add_argument("--weight_decay", type=float, default=5e-4)
     parser.add_argument("--weight_decay_end", type=float, default=5e-6)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--min_lr", type=float, default=1e-6)
     parser.add_argument("--warmup_epochs", type=int, default=5)
-    parser.add_argument("--warmup_steps", type=int, default=-1)
 
     # Augmentation parameters
     parser.add_argument("--RASampler", default=False, type=bool)
     parser.add_argument("--color_jitter", type=float, default=0.3)
-    parser.add_argument("--aa",type=str,default="",help='"v0" or "original" or"rand-m9-mstd0.5-inc1"'),
-    parser.add_argument("--smoothing", type=float, default=0.1)
-
-    # * Random Erase params
-    parser.add_argument("--reprob", type=float, default=0.25, metavar="PCT")
-    parser.add_argument("--remode", type=str, default="pixel")
-    parser.add_argument("--recount", type=int, default=1)
-    parser.add_argument("--resplit", type=str2bool, default=False)
-
-    # * Mixup params
-    parser.add_argument("--mixup", type=float, default=0.8)
-    parser.add_argument("--cutmix", type=float, default=0.0)
-    parser.add_argument("--cutmix_minmax", type=float, nargs="+", default=None)
-    parser.add_argument("--mixup_prob", type=float, default=1.0)
-    parser.add_argument("--mixup_switch_prob", type=float, default=0.5)
-    parser.add_argument("--mixup_mode", type=str, default="batch", help='"batch", "pair", or "elem"')
+    parser.add_argument("--aa",type=str,default="",help='"rand-m9-mstd0.5-inc1","augmix"'),
+    parser.add_argument("--reprob", type=float, default=0., metavar="PCT")
+    parser.add_argument("--mixup", type=float, default=0.)
+    parser.add_argument("--cutmix", type=float, default=0.)
 
     # Dataset parameters
     parser.add_argument("--data_path",default="../../datas/CatsDogs_mini",type=str)
-    parser.add_argument("--train_split_rato",default=0.9,type=float,help="0为手动分割，其他0到1的浮点数为训练集自动分割的比例")
+    parser.add_argument("--train_split_rato",default=0.,type=float,help="0为手动分割，其他0到1的浮点数为训练集自动分割的比例")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", default=88, type=int)
     parser.add_argument("--resume", default="")
-    parser.add_argument("--auto_resume", type=str2bool, default=True)
+    parser.add_argument("--auto_resume", type=str2bool, default=False)
     parser.add_argument("--save_ckpt", type=str2bool, default=True)
-    parser.add_argument("--save_ckpt_freq", default=1, type=int)
-    parser.add_argument("--save_ckpt_num", default=999, type=int)
-
+    parser.add_argument("--save_ckpt_freq", default=5, type=int)
+    parser.add_argument("--save_ckpt_num", default=20, type=int)
     parser.add_argument("--start_epoch", default=0, type=int)
     parser.add_argument("--eval", type=str2bool, default=False)
-    parser.add_argument("--num_workers", default=32, type=int)
-    parser.add_argument("--use_amp",type=str2bool,default=False,help="Use PyTorch's AMP or not")
+    parser.add_argument("--num_workers", default=8, type=int)
+    parser.add_argument("--use_amp",type=str2bool,default=True,help="Use PyTorch's AMP or not")
 
     # distributed training parameters
     parser.add_argument("--world_size", default=1, type=int, help="number of distributed processes")
@@ -123,9 +107,7 @@ def main(args):
     num_tasks = utils.get_world_size()
     global_rank = utils.get_rank()
     if args.RASampler:
-        sampler_train = utils.RASampler(
-            dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
-        )
+        sampler_train = utils.RASampler(dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True)
     else:
         sampler_train = torch.utils.data.DistributedSampler(
             dataset_train,
@@ -170,17 +152,12 @@ def main(args):
     )
 
     mixup_fn = None
-    mixup_active = args.mixup > 0 or args.cutmix > 0.0 or args.cutmix_minmax is not None
+    mixup_active = args.mixup > 0 or args.cutmix > 0.0
     if mixup_active:
         print("Mixup is activated!")
         mixup_fn = Mixup(
             mixup_alpha=args.mixup,
             cutmix_alpha=args.cutmix,
-            cutmix_minmax=args.cutmix_minmax,
-            prob=args.mixup_prob,
-            switch_prob=args.mixup_switch_prob,
-            mode=args.mixup_mode,
-            label_smoothing=args.smoothing,
             num_classes=num_classes,
         )
 
@@ -237,7 +214,6 @@ def main(args):
         args.epochs,
         num_training_steps_per_epoch,
         warmup_epochs=args.warmup_epochs,
-        warmup_steps=args.warmup_steps,
     )
 
     if args.weight_decay_end is None:
@@ -248,19 +224,14 @@ def main(args):
         args.epochs,
         num_training_steps_per_epoch,
     )
-    print(
-        "Max WD = %.7f, Min WD = %.7f"
-        % (max(wd_schedule_values), min(wd_schedule_values))
-    )
+    print("Max WD = %.7f, Min WD = %.7f" % (max(wd_schedule_values), min(wd_schedule_values)))
 
     if mixup_fn is not None:
         criterion = SoftTargetCrossEntropy()
-    elif args.smoothing > 0.0:
-        criterion = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
     else:
-        criterion = torch.nn.CrossEntropyLoss()
+        criterion = LabelSmoothingCrossEntropy()
         # criterion = torch.nn.CrossEntropyLoss(weight=torch.tensor([1,5],dtype=torch.float,device=args.device))
-    print("criterion = %s" % str(criterion))
+    print(f"criterion = {criterion}")
 
     utils.auto_load_model(
         args=args,

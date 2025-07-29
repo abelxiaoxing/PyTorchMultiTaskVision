@@ -37,8 +37,11 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     if wd_schedule_values is not None and param_group["weight_decay"] > 0:
                         param_group["weight_decay"] = wd_schedule_values[it]
 
-            samples,original_samples = samples.to(device, non_blocking=True),samples.to(device, non_blocking=True)
-            targets,original_targets = targets.to(device, non_blocking=True),targets.to(device, non_blocking=True)
+            samples = samples.to(device, non_blocking=True)
+            targets = targets.to(device, non_blocking=True)
+
+            original_samples = samples
+            original_targets = targets
 
             if mixup_fn is not None:
                 samples, targets = mixup_fn(samples, targets)
@@ -78,23 +81,21 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
             torch.cuda.synchronize()
 
-
-            if mixup_fn is None:
-                _, preds = torch.max(output, 1)
-                for i in range(num_classes):
-                    true_positives[i] += torch.sum((preds == i) & (targets == i)).item()
-                    false_positives[i] += torch.sum((preds == i) & (targets != i)).item()
-                    false_negatives[i] += torch.sum((preds != i) & (targets == i)).item()
-                class_acc = (output.max(-1)[-1] == targets).float().mean()
-            else:
+            if mixup_fn is not None:
                 with torch.no_grad():
-                    original_output = model(original_samples)
-                    _, preds = torch.max(original_output, 1)
-                    for i in range(num_classes):
-                        true_positives[i] += torch.sum((preds == i) & (original_targets == i)).item()
-                        false_positives[i] += torch.sum((preds == i) & (original_targets != i)).item()
-                        false_negatives[i] += torch.sum((preds != i) & (original_targets == i)).item()
-                    class_acc = (original_output.max(-1)[-1] == original_targets).float().mean()
+                    eval_output = model(original_samples)
+                eval_targets = original_targets
+            else:
+                eval_output = output
+                eval_targets = targets
+
+            _, preds = torch.max(eval_output, 1)
+            for i in range(num_classes):
+                true_positives[i] += torch.sum((preds == i) & (eval_targets == i)).item()
+                false_positives[i] += torch.sum((preds == i) & (eval_targets != i)).item()
+                false_negatives[i] += torch.sum((preds != i) & (eval_targets == i)).item()
+            
+            class_acc = (eval_output.max(-1)[-1] == eval_targets).float().mean()
                     
             metric_logger.update(loss=loss_value)
             metric_logger.update(class_acc=class_acc)
@@ -154,10 +155,6 @@ def evaluate(data_loader, model, device, num_classes, use_amp=False):
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Val:'
 
-    # 创建用于存储每类精确率和召回率的 Meter 对象
-    precision_meters = [utils.SmoothedValue(window_size=1, fmt='{value:.5f}') for _ in range(num_classes)]
-    recall_meters = [utils.SmoothedValue(window_size=1, fmt='{value:.5f}') for _ in range(num_classes)]
-
     # 添加平均精确率和召回率的 Meter 对象
     metric_logger.add_meter('avg_precision', utils.SmoothedValue(window_size=1, fmt='{value:.5f}'))
     metric_logger.add_meter('avg_recall', utils.SmoothedValue(window_size=1, fmt='{value:.5f}'))
@@ -191,6 +188,7 @@ def evaluate(data_loader, model, device, num_classes, use_amp=False):
 
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
+
         batch_size = images.shape[0]
         metric_logger.update(loss=loss.item())
         metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)
@@ -199,21 +197,17 @@ def evaluate(data_loader, model, device, num_classes, use_amp=False):
     metric_logger.synchronize_between_processes()
 
     # 计算并打印每类的精确率和召回率
+    total_precision = 0
+    total_recall = 0
     for i in range(num_classes):
         precision = true_positives[i] / (true_positives[i] + false_positives[i]) if true_positives[i] + false_positives[i] > 0 else 0
         recall = true_positives[i] / (true_positives[i] + false_negatives[i]) if true_positives[i] + false_negatives[i] > 0 else 0
-        
-        # 更新精确率和召回率的 Meter 对象
-        precision_meters[i].update(precision)
-        recall_meters[i].update(recall)
-
-        # 将每个类别的精确率和召回率添加到 metric_logger
-        metric_logger.add_meter(f'precision_{i}', precision_meters[i])
-        metric_logger.add_meter(f'recall_{i}', recall_meters[i])
+        total_precision += precision
+        total_recall += recall
         print(f'Class {i}: Precision: {precision:.5f}, Recall: {recall:.5f}')
-    # 计算所有类别的平均精确率和召回率
-    avg_precision = sum([meter.global_avg for meter in precision_meters]) / len(precision_meters)
-    avg_recall = sum([meter.global_avg for meter in recall_meters]) / len(recall_meters)
+
+    avg_precision = total_precision / num_classes if num_classes > 0 else 0
+    avg_recall = total_recall / num_classes if num_classes > 0 else 0
     
     # 更新平均精确率和召回率的 Meter 对象
     metric_logger.meters['avg_precision'].update(avg_precision)

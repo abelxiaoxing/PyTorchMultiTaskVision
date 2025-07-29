@@ -5,9 +5,7 @@ from timm.optim.adafactor import Adafactor
 from timm.optim.adahessian import Adahessian
 from timm.optim.adamp import AdamP
 from timm.optim.lookahead import Lookahead
-from timm.optim.nadam import Nadam
 from timm.optim.nvnovograd import NvNovoGrad
-from timm.optim.radam import RAdam
 from timm.optim.rmsprop_tf import RMSpropTF
 from timm.optim.sgdp import SGDP
 from timm.optim.lion import Lion
@@ -75,10 +73,6 @@ def create_optimizer(opt,lr,weight_decay, model, filter_bias_and_bn=True):
         optimizer = optim.AdamW(parameters, **opt_args)
     elif opt_lower == 'lion':
         optimizer = Lion(parameters, betas=(momentum,0.999))
-    elif opt_lower == 'nadam':
-        optimizer = Nadam(parameters, **opt_args)
-    elif opt_lower == 'radam':
-        optimizer = RAdam(parameters, **opt_args)
     elif opt_lower == 'adamp':
         optimizer = AdamP(parameters, wd_ratio=0.01, nesterov=True, **opt_args)
     elif opt_lower == 'sgdp':
