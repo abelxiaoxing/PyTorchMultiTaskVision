@@ -18,31 +18,19 @@ except ImportError:
     has_apex = False
 
 
-def get_parameter_groups(model, weight_decay=1e-5):
-    parameter_group_names = {}
-    parameter_group_vars = {}
-
+def get_parameter_groups(model, weight_decay=1e-5, skip_list=()):
+    decay = []
+    no_decay = []
     for name, param in model.named_parameters():
         if not param.requires_grad:
-            continue  # frozen weights
-        group_name = "decay"
-        this_weight_decay = weight_decay
-
-        if group_name not in parameter_group_names:
-
-            parameter_group_names[group_name] = {
-                "weight_decay": this_weight_decay,
-                "params": [],
-            }
-            parameter_group_vars[group_name] = {
-                "weight_decay": this_weight_decay,
-                "params": [],
-            }
-
-        parameter_group_vars[group_name]["params"].append(param)
-        parameter_group_names[group_name]["params"].append(name)
-    # print("Param groups = %s" % json.dumps(parameter_group_names, indent=2))
-    return list(parameter_group_vars.values())
+            continue  # 冻结权重
+        if len(param.shape) == 1 or name.endswith(".bias") or name in skip_list:
+            no_decay.append(param)
+        else:
+            decay.append(param)
+    return [
+        {'params': no_decay, 'weight_decay': 0.},
+        {'params': decay, 'weight_decay': weight_decay}]
 
 
 def create_optimizer(opt,lr,weight_decay, model, filter_bias_and_bn=True):
