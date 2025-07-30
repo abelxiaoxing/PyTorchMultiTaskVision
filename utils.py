@@ -5,15 +5,12 @@ from collections import defaultdict, deque
 import datetime
 import numpy as np
 from timm.utils import get_state_dict
-
 from pathlib import Path
-
 import torch
 import torch.distributed as dist
 from torch import inf
-
 from tensorboardX import SummaryWriter
-    
+
 class RASampler(torch.utils.data.Sampler):
     def __init__(self, dataset, num_replicas=None, rank=None, shuffle=True):
         if num_replicas is None:
@@ -50,7 +47,7 @@ class RASampler(torch.utils.data.Sampler):
         indices += indices[: (self.total_size - len(indices))]
         assert len(indices) == self.total_size
 
-        # subsample: 使得同一个样本的重复版本进入不同的进程（GPU）
+        # 子采样：使得同一个样本的重复版本进入不同的进程（GPU）
         indices = indices[self.rank : self.total_size : self.num_replicas]
         assert len(indices) == self.num_samples
 
@@ -237,11 +234,11 @@ class WandbLogger(object):
             self._wandb = wandb
         except ImportError:
             raise ImportError(
-                "To use the Weights and Biases Logger please install wandb."
-                "Run `pip install wandb` to install it."
+                "要使用Weights and Biases记录器，请安装wandb。"
+                "运行 `pip install wandb` 来安装它。"
             )
 
-        # Initialize a W&B run 
+        # 初始化W&B运行
         if self._wandb.run is None:
             self._wandb.init(
                 project=args.project,
@@ -250,13 +247,13 @@ class WandbLogger(object):
 
     def log_epoch_metrics(self, metrics, commit=True):
         """
-        Log train/test metrics onto W&B.
+        将训练/测试指标记录到W&B。
         """
-        # Log number of model parameters as W&B summary
+        # 将模型参数数量记录为W&B摘要
         self._wandb.summary['n_parameters'] = metrics.get('n_parameters', None)
         metrics.pop('n_parameters', None)
 
-        # Log current epoch
+        # 记录当前轮次
         self._wandb.log({'epoch': metrics.get('epoch')}, commit=False)
         metrics.pop('epoch')
 
@@ -278,16 +275,16 @@ class WandbLogger(object):
         self._wandb.log_artifact(model_artifact, aliases=["latest", "best"])
 
     def set_steps(self):
-        # Set global training step
+        # 设置全局训练步骤
         self._wandb.define_metric('Rank-0 Batch Wise/*', step_metric='Rank-0 Batch Wise/global_train_step')
-        # Set epoch-wise step
+        # 设置每轮次步骤
         self._wandb.define_metric('Global Train/*', step_metric='epoch')
         self._wandb.define_metric('Global Test/*', step_metric='epoch')
 
 
 def setup_for_distributed(is_master):
     """
-    This function disables printing when not in master process
+    当不在主进程时，此函数禁用打印功能
     """
     import builtins as __builtin__
     builtin_print = __builtin__.print
@@ -346,7 +343,6 @@ def init_distributed_mode(args):
         os.environ['LOCAL_RANK'] = str(args.gpu)
         os.environ['RANK'] = str(args.rank)
         os.environ['WORLD_SIZE'] = str(args.world_size)
-        # ["RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT", "LOCAL_RANK"]
     elif 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
         args.rank = int(os.environ["RANK"])
         args.world_size = int(os.environ['WORLD_SIZE'])
@@ -379,7 +375,7 @@ def load_state_dict(model, state_dict, prefix='', ignore_missing="relative_posit
     missing_keys = []
     unexpected_keys = []
     error_msgs = []
-    # copy state_dict so _load_from_state_dict can modify it
+    # 复制state_dict，以便_load_from_state_dict可对其进行修改
     metadata = getattr(state_dict, '_metadata', None)
     state_dict = state_dict.copy()
     if metadata is not None:
@@ -435,7 +431,7 @@ class NativeScalerWithGradNormCount:
         if update_grad:
             if clip_grad is not None:
                 assert parameters is not None
-                self._scaler.unscale_(optimizer)  # unscale the gradients of optimizer's assigned params in-place
+                self._scaler.unscale_(optimizer)  # 对优化器所管理参数的梯度进行反缩放
                 norm = torch.nn.utils.clip_grad_norm_(parameters, clip_grad)
             else:
                 self._scaler.unscale_(optimizer)
@@ -514,14 +510,16 @@ def piecewise_scheduler(base_value, final_value, epochs, niter_per_ep, warmup_ep
         total_iters = epochs * niter_per_ep
         milestones = [int(total_iters * i // 10) for i in range(1, 10)]  # 设置为总迭代次数的1/10, 2/10, 3/10, ..., 9/10处
 
-    schedule = np.array([base_value])
-    for i in range(1, len(iters)):
-        if i in milestones:
-            schedule = np.append(schedule, schedule[-1] * gamma)
-        else:
-            schedule = np.append(schedule, schedule[-1])
-
-    schedule = np.concatenate((warmup_schedule, schedule))
+    schedule_list = []
+    if len(iters) > 0:
+        schedule_list.append(base_value)
+        for i in range(1, len(iters)):
+            if i in milestones:
+                schedule_list.append(schedule_list[-1] * gamma)
+            else:
+                schedule_list.append(schedule_list[-1])
+    
+    schedule = np.concatenate((warmup_schedule, np.array(schedule_list)))
 
     assert len(schedule) == epochs * niter_per_ep
     return schedule
@@ -597,7 +595,7 @@ def auto_load_model(args,model_without_ddp, optimizer, loss_scaler, model_ema=No
                 
         if 'optimizer' in checkpoint and 'epoch' in checkpoint and missing_nums == 0:
             optimizer.load_state_dict(checkpoint['optimizer'])
-            if not isinstance(checkpoint['epoch'], str): # does not support resuming with 'best', 'best-ema'
+            if not isinstance(checkpoint['epoch'], str): # 不支持使用'best', 'best-ema'恢复
                 args.start_epoch = checkpoint['epoch'] + 1
             else:
                 assert args.eval, 'Does not support resuming with checkpoint-best'
