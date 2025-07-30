@@ -5,3 +5,7 @@ val_cls/
 val_det/
 val_NumericalRegression/
 __pycache__/
+*.tmp
+*.log
+*.pyc
+*.pth
