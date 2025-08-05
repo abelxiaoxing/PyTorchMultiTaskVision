@@ -12,7 +12,7 @@ from timm.models import create_model
 from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 from timm.utils import ModelEmaV3
 from optim_factory import create_optimizer
-from datasets import build_dataset
+from datasets import build_dataset, build_only_validation_dataset
 from engine import train_one_epoch, evaluate
 from utils import NativeScalerWithGradNormCount as NativeScaler
 import utils
@@ -64,11 +64,11 @@ def get_args_parser():
     parser.add_argument("--cutmix", type=float, default=0., help="cutmix系数")
 
     # 数据集参数
-    parser.add_argument("--data_path",default="../../datas/CatsDogs_mini",type=str, help="数据路径")
+    parser.add_argument("--data_path",default="../../datas/邮政",type=str, help="数据路径")
     parser.add_argument("--train_split_rato",default=0.,type=float,help="0为手动分割，其他0到1的浮点数为训练集自动分割的比例")
     parser.add_argument("--device", default="cuda", help="设备")
     parser.add_argument("--seed", default=88, type=int, help="随机种子")
-    parser.add_argument("--resume", default="", help="恢复训练的检查点路径")
+    parser.add_argument("--resume", default="best_model0.pth", help="恢复训练的检查点路径")
     parser.add_argument('--auto_resume', action='store_true', help="是否自动恢复训练")
     parser.add_argument('--no-auto_resume', action='store_false', dest='auto_resume', help="不自动恢复训练")
     parser.set_defaults(auto_resume=False)
@@ -136,7 +136,7 @@ def prepare_data(args):
         num_workers=args.num_workers, pin_memory=True, drop_last=True,
     )
     data_loader_val = torch.utils.data.DataLoader(
-        dataset_val, sampler=sampler_val, batch_size=int(1.5 * args.batch_size),
+        dataset_val, sampler=sampler_val, batch_size=args.batch_size,
         num_workers=args.num_workers, pin_memory=True,
     )
     return data_loader_train, data_loader_val, num_classes, dataset_train, dataset_val
@@ -297,59 +297,75 @@ def run_training_loop(args, model, model_without_ddp, model_ema, data_loader_tra
     print(f"训练时间 {total_time_str}")
 
 
-def initialize_model_for_move(model_weight_path, model_ema, device):
-    checkpoint = torch.load(model_weight_path, map_location=device,weights_only=False)
-    num_classes = checkpoint["num_classes"]
-    if model_ema:
-        model = checkpoint["model"]
-        model_ema_obj = ModelEmaV3(model,decay=0.999,device=device)
-        if 'model_ema' in checkpoint.keys():
+def load_model_for_inference(model_path, use_ema, device):
+    """为推理（评估或移动）加载模型。"""
+    print(f"从 {model_path} 加载模型...")
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+    num_classes = checkpoint['num_classes']
+    if use_ema:
+        model = checkpoint['model']
+        model.to(device)
+        model_ema_obj = ModelEmaV3(model, decay=0.9995, device=device)
+        if 'model_ema' in checkpoint:
             model_ema_obj.module.load_state_dict(checkpoint['model_ema'])
-            print(f"initialize model_ema success")
+            print("成功加载 EMA 模型权重。" )
         else:
+            print("警告: 在检查点中未找到 'model_ema' 权重。使用基础模型权重代替。" )
             model_ema_obj.module.load_state_dict(checkpoint['model'].state_dict())
-        return model_ema_obj.module,num_classes
+        model_to_eval = model_ema_obj.module
     else:
-        model= checkpoint["model"]
-        return model,num_classes
+        model_to_eval = checkpoint['model']
+        print("成功加载基础模型权重。" )
 
-def create_data_transform(img_size):
-    return transforms.Compose([
-        transforms.Resize((img_size, img_size)),
-        transforms.ToTensor(),
-        transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD),
-    ])
+    model_to_eval.to(device)
+    model_to_eval.eval()
+    return model_to_eval, num_classes
 
-def run_move_mode(args):
-    """根据模型预测移动图像"""
-    device = torch.device(args.device)
-    
-    if not args.resume:
-        print("错误: move模式需要使用 --resume 指定模型权重路径。")
-        return
-    if not args.move_dir:
-        print("错误: move模式需要使用 --move_dir 指定图片路径。")
-        return
-    if not os.path.isdir(args.move_dir):
-        print(f"错误: --move_dir '{args.move_dir}' 不是一个有效的目录。")
-        return
 
-    print(f"开始从 '{args.move_dir}' 移动图片...")
-    
-    empty_path = os.path.join(os.path.dirname(args.move_dir), "Empty")
-    non_empty_path = os.path.join(os.path.dirname(args.move_dir), "NonEmpty")
-    os.makedirs(empty_path, exist_ok=True)
-    os.makedirs(non_empty_path, exist_ok=True)
+def main(args):
+    """主函数"""
+    device = setup(args)
+    print(args)
 
-    data_transform = create_data_transform(args.input_size)
-    model, _ = initialize_model_for_move(args.resume, args.model_ema, device)
-    model.eval()
+    if args.mode == "train":
+        data_loader_train, data_loader_val, num_classes, dataset_train, dataset_val = prepare_data(args)
+        model, model_without_ddp, model_ema, optimizer, loss_scaler, criterion, mixup_fn, n_parameters = prepare_model(args, num_classes, device)
+        utils.auto_load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler, model_ema=model_ema)
+        
+        log_writer, wandb_logger = setup_logging(args)
+        total_batch_size = args.batch_size * args.update_freq * utils.get_world_size()
+        num_training_steps_per_epoch = len(dataset_train) // total_batch_size
+        print(f"学习率 = {args.lr:.8f}, 批处理大小 = {total_batch_size}, 更新频率 = {args.update_freq}")
+        print(f"训练样本数 = {len(dataset_train)}, 验证样本数 = {len(dataset_val)},每轮训练步数 = {num_training_steps_per_epoch}")
 
-    for file_name in os.listdir(args.move_dir):
-        file_path = os.path.join(args.move_dir, file_name)
-        if not os.path.isfile(file_path):
-            continue
-        try:
+        run_training_loop(args, model, model_without_ddp, model_ema, data_loader_train, data_loader_val, device, num_classes, criterion, optimizer, loss_scaler, mixup_fn, log_writer, wandb_logger, n_parameters)
+
+    elif args.mode == "eval":
+        print("仅评估模式")
+        model_to_eval, num_classes = load_model_for_inference(args.resume, args.model_ema, device)
+        _, dataset_val, _ = build_dataset(args, eval_only=True)
+        sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+        data_loader_val = torch.utils.data.DataLoader(
+            dataset_val, sampler=sampler_val, batch_size=args.batch_size,
+            num_workers=args.num_workers, pin_memory=True,
+        )
+        test_stats = evaluate(data_loader_val, model_to_eval, device, num_classes=num_classes, use_amp=args.use_amp)
+        print(f"网络在{len(dataset_val)}张测试图像上的准确率: {test_stats['acc1']:.5f}%")
+
+    elif args.mode == "move":
+        model, _ = load_model_for_inference(args.resume, args.model_ema, device)
+        print(f"开始从 '{args.move_dir}' 移动图片...")
+        empty_path = os.path.join(os.path.dirname(args.move_dir), "Empty")
+        non_empty_path = os.path.join(os.path.dirname(args.move_dir), "NonEmpty")
+        os.makedirs(empty_path, exist_ok=True)
+        os.makedirs(non_empty_path, exist_ok=True)
+
+        data_transform = build_transform(is_train=False, args=args)
+
+        for file_name in os.listdir(args.move_dir):
+            file_path = os.path.join(args.move_dir, file_name)
+            if not os.path.isfile(file_path):
+                continue
             img = Image.open(file_path).convert("RGB")
             img = data_transform(img).unsqueeze(0).to(device)
 
@@ -360,52 +376,11 @@ def run_move_mode(args):
             predicted_class_index = torch.argmax(predict).item()
             target_path = empty_path if predicted_class_index == 0 else non_empty_path
             shutil.move(file_path, os.path.join(target_path, file_name))
-        except Exception as e:
-            print(f"无法处理 {file_name}: {e}")
-    print("图片移动完成。")
-
-
-def main(args):
-    """主函数"""
-    if args.mode == "move":
-        run_move_mode(args)
-        return
-
-    device = setup(args)
-    print(args)
-
-    data_loader_train, data_loader_val, num_classes, dataset_train, dataset_val = prepare_data(args)
-    model, model_without_ddp, model_ema, optimizer, loss_scaler, criterion, mixup_fn, n_parameters = prepare_model(args, num_classes, device)
-
-    utils.auto_load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler, model_ema=model_ema)
-
-    if args.mode == 'eval':
-        print("仅评估模式")
-        model_to_eval = model_ema.module if args.model_ema else model
-        test_stats = evaluate(data_loader_val, model_to_eval, device, num_classes=num_classes, use_amp=args.use_amp)
-        print(f"网络在{len(dataset_val)}张测试图像上的准确率: {test_stats['acc1']:.5f}%")
-        return
-
-    if args.mode == 'train':
-        log_writer, wandb_logger = setup_logging(args)
-        total_batch_size = args.batch_size * args.update_freq * utils.get_world_size()
-        num_training_steps_per_epoch = len(dataset_train) // total_batch_size
-        print(f"学习率 = {args.lr:.8f}, 批处理大小 = {total_batch_size}, 更新频率 = {args.update_freq}")
-        print(f"训练样本数 = {len(dataset_train)}, 每轮训练步数 = {num_training_steps_per_epoch}")
-
-        lr_schedule_values = utils.cosine_scheduler(args.lr, args.min_lr, args.epochs, num_training_steps_per_epoch, warmup_epochs=args.warmup_epochs)
-        if args.weight_decay_end is None:
-            args.weight_decay_end = args.weight_decay
-        wd_schedule_values = utils.cosine_scheduler(args.weight_decay, args.weight_decay_end, args.epochs, num_training_steps_per_epoch)
-        print(f"最大权重衰减 = {max(wd_schedule_values):.7f}, 最小权重衰减 = {min(wd_schedule_values):.7f}")
-
-        run_training_loop(args, model, model_without_ddp, model_ema, data_loader_train, data_loader_val, device, num_classes, criterion, optimizer, loss_scaler, mixup_fn, log_writer, wandb_logger, n_parameters)
+        print("图片移动完成。" )
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        "分类训练和评估脚本", parents=[get_args_parser()]
-    )
+    parser = argparse.ArgumentParser("分类训练和评估脚本", parents=[get_args_parser()])
     args = parser.parse_args()
     Path("./train_cls/output").mkdir(parents=True, exist_ok=True)
     main(args)

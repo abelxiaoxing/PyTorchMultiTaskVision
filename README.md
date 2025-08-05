@@ -7,6 +7,7 @@
 + 优化了划分性能，避免加载完整图像，速度大幅提升。
 + modelchange改为面向对象，代码更加清晰，易于维护。
 + optim_factory区分权重和偏置/归一化参数，不对偏置/归一化参数应用衰减。重构get_parameter_groups部分，用列表推导式构建优化器所需的参数组，提高性能。
++ 删除val.py融合进train.py中，train.py内涵三个mode，分别为train、eval、move。
 
 ### 20241217
 + modelchange.py新增model_ema转化为标准模型，权重中"model_ema"改为"model"

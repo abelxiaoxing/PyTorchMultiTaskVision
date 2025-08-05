@@ -6,6 +6,18 @@ from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from timm.data import create_transform
 import json
 
+def _print_transform(transform, name):
+    print(f"{name} Transform = ")
+    if isinstance(transform, tuple):
+        for trans in transform:
+            print(" - - - - - - - - - - ")
+            for t in trans.transforms:
+                print(t)
+    else:
+        for t in transform.transforms:
+            print(t)
+    print("---------------------------")
+
 # 将数据集划分为训练集和验证集，确保验证集每个类别的样本数量相等。
 def split_dataset(root, train_ratio=0.5):
     dataset = datasets.ImageFolder(root)
@@ -40,32 +52,19 @@ def split_dataset(root, train_ratio=0.5):
 
 
 # 构建数据集
-def build_dataset(args):
+def build_dataset(args, eval_only=False):
+    val_transform = build_transform(False, args)
+    if eval_only:
+        _print_transform(val_transform, "Validation")
+        val_dataset = datasets.ImageFolder(args.data_path, transform=val_transform)
+        num_classes = len(val_dataset.classes)
+        return None, val_dataset, num_classes
+
     # 构建训练集和验证集的转换
     train_transform = build_transform(True, args)  # 训练集转换
-    val_transform = build_transform(False, args)   # 验证集转换
 
-    print("Train Transform = ")
-    if isinstance(train_transform, tuple):  # 打印转换信息
-        for trans in train_transform:
-            print(" - - - - - - - - - - ")
-            for t in trans.transforms:
-                print(t)
-    else:
-        for t in train_transform.transforms:
-            print(t)
-    print("---------------------------")
-
-    print("Validation Transform = ")
-    if isinstance(val_transform, tuple):
-        for trans in val_transform:
-            print(" - - - - - - - - - - ")
-            for t in trans.transforms:
-                print(t)
-    else:
-        for t in val_transform.transforms:
-            print(t)
-    print("---------------------------")
+    _print_transform(train_transform, "Train")
+    _print_transform(val_transform, "Validation")
 
     if args.train_split_rato == 0:  # 如果数据集是手动设置
         # 手动设置训练集和验证集路径
