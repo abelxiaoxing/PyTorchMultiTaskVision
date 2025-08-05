@@ -602,3 +602,14 @@ def auto_load_model(args,model_without_ddp, optimizer, loss_scaler, model_ema=No
                 loss_scaler.load_state_dict(checkpoint['scaler'])
             print("With optim & sched!")
     return 
+
+
+def calculate_precision_recall(true_positives, false_positives, false_negatives, num_classes):
+    """计算每个类别的精确率和召回率"""
+    results = []
+    for i in range(num_classes):
+        precision = true_positives[i] / (true_positives[i] + false_positives[i]) if true_positives[i] + false_positives[i] > 0 else 0
+        recall = true_positives[i] / (true_positives[i] + false_negatives[i]) if true_positives[i] + false_negatives[i] > 0 else 0
+        results.append((precision, recall))
+        print(f'Class {i}: Precision: {precision:.5f}, Recall: {recall:.5f}')
+    return results 

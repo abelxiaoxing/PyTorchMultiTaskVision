@@ -99,7 +99,6 @@ def build_dataset(args):
 
 def build_transform(is_train, args):
     if is_train:
-        transform = []
         transform = create_transform(
             input_size=args.input_size,
             scale=(1.0, 1.0),
@@ -112,11 +111,10 @@ def build_transform(is_train, args):
             re_prob=args.reprob,
         )
         return transform
-    else :
-        t = []
-        size = args.input_size
-        t.append(transforms.Resize([size, size]))
-        t.append(transforms.ToTensor())
-        t.append(transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD))
-        return transforms.Compose(t)
+    else:
+        return transforms.Compose([
+            transforms.Resize([args.input_size, args.input_size]),
+            transforms.ToTensor(),
+            transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)
+        ])
 

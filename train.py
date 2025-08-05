@@ -16,6 +16,10 @@ from datasets import build_dataset
 from engine import train_one_epoch, evaluate
 from utils import NativeScalerWithGradNormCount as NativeScaler
 import utils
+import shutil
+from PIL import Image
+from torchvision import transforms
+from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 
 def get_args_parser():
@@ -74,9 +78,8 @@ def get_args_parser():
     parser.add_argument("--save_ckpt_freq", default=5, type=int, help="保存检查点的频率")
     parser.add_argument("--save_ckpt_num", default=20, type=int, help="保存检查点的数量")
     parser.add_argument("--start_epoch", default=0, type=int, help="起始轮数")
-    parser.add_argument('--eval', action='store_true', help="仅评估模式")
-    parser.add_argument('--no-eval', action='store_false', dest='eval', help="不仅评估模式")
-    parser.set_defaults(eval=False)
+    parser.add_argument("--mode", default="train", choices=["train", "eval", "move"], type=str, help="运行模式: train(训练), eval(评估), move(移动分类图片)")
+    parser.add_argument("--move_dir", default="", type=str, help="需要移动分类的图片路径(仅move模式有效)")
     parser.add_argument("--num_workers", default=8, type=int, help="数据加载器的工作进程数")
     parser.add_argument('--use_amp', action='store_true', help="是否使用PyTorch的AMP")
     parser.add_argument('--no-use_amp', action='store_false', dest='use_amp', help="不使用PyTorch的AMP")
@@ -172,6 +175,15 @@ def prepare_model(args, num_classes, device):
 
     return model, model_without_ddp, model_ema, optimizer, loss_scaler, criterion, mixup_fn, n_parameters
 
+def setup_logging(args):
+    if utils.is_main_process():
+        os.makedirs("train_cls/log_dir", exist_ok=True)
+        log_writer = utils.TensorboardLogger(log_dir="train_cls/log_dir")
+        wandb_logger = utils.WandbLogger(args) if args.enable_wandb else None
+    else:
+        log_writer, wandb_logger = None, None
+    return log_writer, wandb_logger
+
 def save_checkpoint(args, epoch, model_without_ddp, optimizer, loss_scaler, model_ema, num_classes, input_shape):
     """保存模型检查点"""
     if not args.save_ckpt:
@@ -187,6 +199,15 @@ def save_checkpoint(args, epoch, model_without_ddp, optimizer, loss_scaler, mode
         num_classes=num_classes,
     )
 
+def update_log_stats(test_stats, test_stats_ema=None):
+    """更新日志统计信息"""
+    log_stats = {f"test_{k}": v for k, v in test_stats.items()}
+    
+    if test_stats_ema:
+        log_stats.update({f"test_{k}_ema": v for k, v in test_stats_ema.items()})
+    
+    return log_stats
+
 def run_evaluation(args, model, model_without_ddp, model_ema, data_loader_val, device, num_classes, epoch, log_writer, wandb_logger, max_accuracy, max_accuracy_ema, optimizer, loss_scaler):
     """运行评估并记录结果"""
     test_stats = evaluate(data_loader_val, model, device, num_classes=num_classes, use_amp=args.use_amp)
@@ -200,7 +221,7 @@ def run_evaluation(args, model, model_without_ddp, model_ema, data_loader_val, d
         log_writer.update(test_acc1=test_stats["acc1"], head="perf", step=epoch)
         log_writer.update(test_loss=test_stats["loss"], head="perf", step=epoch)
 
-    log_stats = {f"test_{k}": v for k, v in test_stats.items()}
+    log_stats = update_log_stats(test_stats)
 
     if args.model_ema:
         test_stats_ema = evaluate(data_loader_val, model_ema.module, device, num_classes, use_amp=args.use_amp)
@@ -211,50 +232,22 @@ def run_evaluation(args, model, model_without_ddp, model_ema, data_loader_val, d
         print(f"最高EMA准确率: {max_accuracy_ema:.2f}%")
         if log_writer is not None:
             log_writer.update(test_acc1_ema=test_stats_ema["acc1"], head="perf", step=epoch)
-        log_stats.update({f"test_{k}_ema": v for k, v in test_stats_ema.items()})
+        log_stats = update_log_stats(test_stats, test_stats_ema)
 
     return log_stats, max_accuracy, max_accuracy_ema
 
-def main(args):
-    """主函数"""
-    device = setup(args)
-    print(args)
-
-    data_loader_train, data_loader_val, num_classes, dataset_train, dataset_val = prepare_data(args)
-    model, model_without_ddp, model_ema, optimizer, loss_scaler, criterion, mixup_fn, n_parameters = prepare_model(args, num_classes, device)
-
-    input_shape = (1, 3, args.input_size, args.input_size)
-
-    if utils.is_main_process():
-        os.makedirs("train_cls/log_dir", exist_ok=True)
-        log_writer = utils.TensorboardLogger(log_dir="train_cls/log_dir")
-        wandb_logger = utils.WandbLogger(args) if args.enable_wandb else None
-    else:
-        log_writer, wandb_logger = None, None
+def run_training_loop(args, model, model_without_ddp, model_ema, data_loader_train, data_loader_val, device, num_classes, criterion, optimizer, loss_scaler, mixup_fn, log_writer, wandb_logger, n_parameters):
+    max_accuracy, max_accuracy_ema = 0.0, 0.0
+    print(f"开始训练 {args.epochs} 轮")
+    start_time = time.time()
 
     total_batch_size = args.batch_size * args.update_freq * utils.get_world_size()
-    num_training_steps_per_epoch = len(dataset_train) // total_batch_size
-    print(f"学习率 = {args.lr:.8f}, 批处理大小 = {total_batch_size}, 更新频率 = {args.update_freq}")
-    print(f"训练样本数 = {len(dataset_train)}, 每轮训练步数 = {num_training_steps_per_epoch}")
+    num_training_steps_per_epoch = len(data_loader_train.dataset) // total_batch_size
 
     lr_schedule_values = utils.cosine_scheduler(args.lr, args.min_lr, args.epochs, num_training_steps_per_epoch, warmup_epochs=args.warmup_epochs)
     if args.weight_decay_end is None:
         args.weight_decay_end = args.weight_decay
     wd_schedule_values = utils.cosine_scheduler(args.weight_decay, args.weight_decay_end, args.epochs, num_training_steps_per_epoch)
-    print(f"最大权重衰减 = {max(wd_schedule_values):.7f}, 最小权重衰减 = {min(wd_schedule_values):.7f}")
-
-    utils.auto_load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler, model_ema=model_ema)
-
-    if args.eval:
-        print("仅评估模式")
-        model_to_eval = model_ema.module if args.model_ema else model
-        test_stats = evaluate(data_loader_val, model_to_eval, device, num_classes=num_classes, use_amp=args.use_amp)
-        print(f"网络在{len(dataset_val)}张测试图像上的准确率: {test_stats['acc1']:.5f}%")
-        return
-
-    max_accuracy, max_accuracy_ema = 0.0, 0.0
-    print(f"开始训练 {args.epochs} 轮")
-    start_time = time.time()
 
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
@@ -273,7 +266,7 @@ def main(args):
         )
 
         if (epoch + 1) % args.save_ckpt_freq == 0 or epoch + 1 == args.epochs:
-            save_checkpoint(args, epoch, model_without_ddp, optimizer, loss_scaler, model_ema, num_classes, input_shape)
+            save_checkpoint(args, epoch, model_without_ddp, optimizer, loss_scaler, model_ema, num_classes, (1, 3, args.input_size, args.input_size))
 
         eval_log_stats, max_accuracy, max_accuracy_ema = run_evaluation(
             args, model, model_without_ddp, model_ema, data_loader_val, device, num_classes, epoch,
@@ -302,6 +295,111 @@ def main(args):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print(f"训练时间 {total_time_str}")
+
+
+def initialize_model_for_move(model_weight_path, model_ema, device):
+    checkpoint = torch.load(model_weight_path, map_location=device,weights_only=False)
+    num_classes = checkpoint["num_classes"]
+    if model_ema:
+        model = checkpoint["model"]
+        model_ema_obj = ModelEmaV3(model,decay=0.999,device=device)
+        if 'model_ema' in checkpoint.keys():
+            model_ema_obj.module.load_state_dict(checkpoint['model_ema'])
+            print(f"initialize model_ema success")
+        else:
+            model_ema_obj.module.load_state_dict(checkpoint['model'].state_dict())
+        return model_ema_obj.module,num_classes
+    else:
+        model= checkpoint["model"]
+        return model,num_classes
+
+def create_data_transform(img_size):
+    return transforms.Compose([
+        transforms.Resize((img_size, img_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD),
+    ])
+
+def run_move_mode(args):
+    """根据模型预测移动图像"""
+    device = torch.device(args.device)
+    
+    if not args.resume:
+        print("错误: move模式需要使用 --resume 指定模型权重路径。")
+        return
+    if not args.move_dir:
+        print("错误: move模式需要使用 --move_dir 指定图片路径。")
+        return
+    if not os.path.isdir(args.move_dir):
+        print(f"错误: --move_dir '{args.move_dir}' 不是一个有效的目录。")
+        return
+
+    print(f"开始从 '{args.move_dir}' 移动图片...")
+    
+    empty_path = os.path.join(os.path.dirname(args.move_dir), "Empty")
+    non_empty_path = os.path.join(os.path.dirname(args.move_dir), "NonEmpty")
+    os.makedirs(empty_path, exist_ok=True)
+    os.makedirs(non_empty_path, exist_ok=True)
+
+    data_transform = create_data_transform(args.input_size)
+    model, _ = initialize_model_for_move(args.resume, args.model_ema, device)
+    model.eval()
+
+    for file_name in os.listdir(args.move_dir):
+        file_path = os.path.join(args.move_dir, file_name)
+        if not os.path.isfile(file_path):
+            continue
+        try:
+            img = Image.open(file_path).convert("RGB")
+            img = data_transform(img).unsqueeze(0).to(device)
+
+            with torch.no_grad():
+                output = torch.squeeze(model(img)).cpu()
+                predict = torch.softmax(output, dim=0)
+
+            predicted_class_index = torch.argmax(predict).item()
+            target_path = empty_path if predicted_class_index == 0 else non_empty_path
+            shutil.move(file_path, os.path.join(target_path, file_name))
+        except Exception as e:
+            print(f"无法处理 {file_name}: {e}")
+    print("图片移动完成。")
+
+
+def main(args):
+    """主函数"""
+    if args.mode == "move":
+        run_move_mode(args)
+        return
+
+    device = setup(args)
+    print(args)
+
+    data_loader_train, data_loader_val, num_classes, dataset_train, dataset_val = prepare_data(args)
+    model, model_without_ddp, model_ema, optimizer, loss_scaler, criterion, mixup_fn, n_parameters = prepare_model(args, num_classes, device)
+
+    utils.auto_load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler, model_ema=model_ema)
+
+    if args.mode == 'eval':
+        print("仅评估模式")
+        model_to_eval = model_ema.module if args.model_ema else model
+        test_stats = evaluate(data_loader_val, model_to_eval, device, num_classes=num_classes, use_amp=args.use_amp)
+        print(f"网络在{len(dataset_val)}张测试图像上的准确率: {test_stats['acc1']:.5f}%")
+        return
+
+    if args.mode == 'train':
+        log_writer, wandb_logger = setup_logging(args)
+        total_batch_size = args.batch_size * args.update_freq * utils.get_world_size()
+        num_training_steps_per_epoch = len(dataset_train) // total_batch_size
+        print(f"学习率 = {args.lr:.8f}, 批处理大小 = {total_batch_size}, 更新频率 = {args.update_freq}")
+        print(f"训练样本数 = {len(dataset_train)}, 每轮训练步数 = {num_training_steps_per_epoch}")
+
+        lr_schedule_values = utils.cosine_scheduler(args.lr, args.min_lr, args.epochs, num_training_steps_per_epoch, warmup_epochs=args.warmup_epochs)
+        if args.weight_decay_end is None:
+            args.weight_decay_end = args.weight_decay
+        wd_schedule_values = utils.cosine_scheduler(args.weight_decay, args.weight_decay_end, args.epochs, num_training_steps_per_epoch)
+        print(f"最大权重衰减 = {max(wd_schedule_values):.7f}, 最小权重衰减 = {min(wd_schedule_values):.7f}")
+
+        run_training_loop(args, model, model_without_ddp, model_ema, data_loader_train, data_loader_val, device, num_classes, criterion, optimizer, loss_scaler, mixup_fn, log_writer, wandb_logger, n_parameters)
 
 
 if __name__ == "__main__":

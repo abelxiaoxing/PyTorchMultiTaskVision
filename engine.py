@@ -6,7 +6,14 @@ from timm.utils import accuracy, ModelEmaV3
 from rich.progress import Progress
 import utils
 import time
-                                       
+
+def update_metrics(preds, targets, true_positives, false_positives, false_negatives):
+    num_classes = len(true_positives)
+    for i in range(num_classes):
+        true_positives[i] += torch.sum((preds == i) & (targets == i)).item()
+        false_positives[i] += torch.sum((preds == i) & (targets != i)).item()
+        false_negatives[i] += torch.sum((preds != i) & (targets == i)).item()
+
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, loss_scaler, max_norm: float = 0,
@@ -90,10 +97,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 eval_targets = targets
 
             _, preds = torch.max(eval_output, 1)
-            for i in range(num_classes):
-                true_positives[i] += torch.sum((preds == i) & (eval_targets == i)).item()
-                false_positives[i] += torch.sum((preds == i) & (eval_targets != i)).item()
-                false_negatives[i] += torch.sum((preds != i) & (eval_targets == i)).item()
+            update_metrics(preds, eval_targets, true_positives, false_positives, false_negatives)
             
             class_acc = (eval_output.max(-1)[-1] == eval_targets).float().mean()
                     
@@ -136,10 +140,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     print(f"Averaged stats:{metric_logger},Time:{end_time - start_time}")
 
     # Calculate and print precision and recall for each class
-    for i in range(num_classes):
-        precision = true_positives[i] / (true_positives[i] + false_positives[i]) if true_positives[i] + false_positives[i] > 0 else 0
-        recall = true_positives[i] / (true_positives[i] + false_negatives[i]) if true_positives[i] + false_negatives[i] > 0 else 0
-        print(f'Class {i}: Precision: {precision:.5f}, Recall: {recall:.5f}')
+    utils.calculate_precision_recall(true_positives, false_positives, false_negatives, num_classes)
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
@@ -181,10 +182,7 @@ def evaluate(data_loader, model, device, num_classes, use_amp=False):
         _, preds = torch.max(output, 1)
 
         # 更新每类的真正例、假正例和假反例计数
-        for i in range(num_classes):
-            true_positives[i] += torch.sum((preds == i) & (target == i)).item()
-            false_positives[i] += torch.sum((preds == i) & (target != i)).item()
-            false_negatives[i] += torch.sum((preds != i) & (target == i)).item()
+        update_metrics(preds, target, true_positives, false_positives, false_negatives)
 
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
@@ -197,15 +195,11 @@ def evaluate(data_loader, model, device, num_classes, use_amp=False):
     metric_logger.synchronize_between_processes()
 
     # 计算并打印每类的精确率和召回率
-    total_precision = 0
-    total_recall = 0
-    for i in range(num_classes):
-        precision = true_positives[i] / (true_positives[i] + false_positives[i]) if true_positives[i] + false_positives[i] > 0 else 0
-        recall = true_positives[i] / (true_positives[i] + false_negatives[i]) if true_positives[i] + false_negatives[i] > 0 else 0
-        total_precision += precision
-        total_recall += recall
-        print(f'Class {i}: Precision: {precision:.5f}, Recall: {recall:.5f}')
-
+    precision_recall_results = utils.calculate_precision_recall(true_positives, false_positives, false_negatives, num_classes)
+    
+    total_precision = sum([pr[0] for pr in precision_recall_results])
+    total_recall = sum([pr[1] for pr in precision_recall_results])
+    
     avg_precision = total_precision / num_classes if num_classes > 0 else 0
     avg_recall = total_recall / num_classes if num_classes > 0 else 0
     
