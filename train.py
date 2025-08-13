@@ -12,14 +12,12 @@ from timm.models import create_model
 from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 from timm.utils import ModelEmaV3
 from optim_factory import create_optimizer
-from datasets import build_dataset, build_only_validation_dataset
+from datasets import build_dataset, build_transform
 from engine import train_one_epoch, evaluate
 from utils import NativeScalerWithGradNormCount as NativeScaler
 import utils
 import shutil
 from PIL import Image
-from torchvision import transforms
-from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 
 def get_args_parser():
@@ -64,8 +62,8 @@ def get_args_parser():
     parser.add_argument("--cutmix", type=float, default=0., help="cutmix系数")
 
     # 数据集参数
-    parser.add_argument("--data_path",default="../../datas/邮政",type=str, help="数据路径")
-    parser.add_argument("--train_split_rato",default=0.,type=float,help="0为手动分割，其他0到1的浮点数为训练集自动分割的比例")
+    parser.add_argument("--data_path",default="",type=str, help="数据路径")
+    parser.add_argument("--train_split_ratio",default=0.,type=float,help="0为手动分割，其他0到1的浮点数为训练集自动分割的比例")
     parser.add_argument("--device", default="cuda", help="设备")
     parser.add_argument("--seed", default=88, type=int, help="随机种子")
     parser.add_argument("--resume", default="best_model0.pth", help="恢复训练的检查点路径")
