@@ -14,8 +14,8 @@ from timm.utils import ModelEmaV3
 from optim_factory import create_optimizer
 from datasets import build_dataset, build_transform
 from engine import train_one_epoch, evaluate
-from utils import NativeScalerWithGradNormCount as NativeScaler
-import utils
+from utils.utils import NativeScalerWithGradNormCount as NativeScaler
+import utils.utils as utils
 import shutil
 from PIL import Image
 
@@ -28,19 +28,17 @@ def get_args_parser():
         "图像分类的训练和评估脚本", add_help=False
     )
     parser.add_argument("--batch_size", default=16, type=int, help="批处理大小")
-    parser.add_argument("--epochs", default=100, type=int, help="训练轮数")
+    parser.add_argument("--epochs", default=30, type=int, help="训练轮数")
     parser.add_argument("--update_freq", default=1, type=int, help="更新频率")
     # 模型参数
-    parser.add_argument('--pretrained', action='store_true', help="是否使用预训练模型")
-    parser.add_argument('--no-pretrained', action='store_false', dest='pretrained', help="不使用预训练模型")
+    # 模型参数
+    parser.add_argument('--no-pretrained', action='store_false', dest='pretrained', help="不使用预训练模型 (默认: 使用)")
     parser.set_defaults(pretrained=True)
-    parser.add_argument("--model", default="efficientvit_m0", type=str, metavar="MODEL", help="模型名称")
+    parser.add_argument("--model", default="convnextv2_tiny.fcmae_ft_in22k_in1k", type=str, metavar="MODEL", help="模型名称")
     parser.add_argument("--drop_path", type=float, default=0.05, metavar="PCT", help="drop path概率")
     parser.add_argument("--input_size", default=224, type=int, help="输入图像大小")
     # EMA相关参数
-    parser.add_argument('--model_ema', action='store_true', help="是否使用EMA")
-    parser.add_argument('--no-model_ema', action='store_false', dest='model_ema', help="不使用EMA")
-    parser.set_defaults(model_ema=False)
+    parser.add_argument('--model_ema', action='store_true', help="启用模型EMA (默认: 关闭)")
 
     # 优化参数
     parser.add_argument("--opt", default="lion", type=str, help="优化器类型")
@@ -48,58 +46,46 @@ def get_args_parser():
     parser.add_argument("--weight_decay", type=float, default=5e-4, help="权重衰减")
     parser.add_argument("--weight_decay_end", type=float, default=5e-6, help="权重衰减终点值")
     parser.add_argument("--lr", type=float, default=1e-4, help="学习率")
-    parser.add_argument("--min_lr", type=float, default=1e-6, help="最小学习率")
-    parser.add_argument("--warmup_epochs", type=int, default=5, help="预热轮数")
+    parser.add_argument("--min_lr", type=float, default=1e-7, help="最小学习率")
+    parser.add_argument("--warmup_epochs", type=int, default=1, help="预热轮数")
 
     # 数据增强参数
-    parser.add_argument('--RASampler', action='store_true', help="是否使用RASampler")
-    parser.add_argument('--no-RASampler', action='store_false', dest='RASampler', help="不使用RASampler")
-    parser.set_defaults(RASampler=False)
-    parser.add_argument("--color_jitter", type=float, default=0.3, help="颜色抖动")
+    parser.add_argument('--RASampler', action='store_true', help="启用RASampler (默认: 关闭)")
+    parser.add_argument("--color_jitter", type=float, default=0.1, help="颜色抖动")
     parser.add_argument("--aa",type=str,default="",help='"rand-m9-mstd0.5-inc1","augmix"'),
     parser.add_argument("--reprob", type=float, default=0., metavar="PCT", help="随机擦除概率")
     parser.add_argument("--mixup", type=float, default=0., help="mixup系数")
     parser.add_argument("--cutmix", type=float, default=0., help="cutmix系数")
 
     # 数据集参数
-    parser.add_argument("--data_path",default="",type=str, help="数据路径")
-    parser.add_argument("--train_split_ratio",default=0.,type=float,help="0为手动分割，其他0到1的浮点数为训练集自动分割的比例")
+    parser.add_argument("--data_path",default="datas",type=str, help="数据路径")
+    parser.add_argument("--train_split_ratio",default=0.8,type=float,help="0为手动分割，其他0到1的浮点数为训练集自动分割的比例")
     parser.add_argument("--device", default="cuda", help="设备")
     parser.add_argument("--seed", default=88, type=int, help="随机种子")
-    parser.add_argument("--resume", default="best_model0.pth", help="恢复训练的检查点路径")
-    parser.add_argument('--auto_resume', action='store_true', help="是否自动恢复训练")
-    parser.add_argument('--no-auto_resume', action='store_false', dest='auto_resume', help="不自动恢复训练")
-    parser.set_defaults(auto_resume=False)
-    parser.add_argument('--save_ckpt', action='store_true', help="是否保存检查点")
-    parser.add_argument('--no-save_ckpt', action='store_false', dest='save_ckpt', help="不保存检查点")
+    parser.add_argument("--resume", default="", help="恢复训练的检查点路径")
+    parser.add_argument('--auto_resume', action='store_true', help="自动从最新的检查点恢复训练 (默认: 关闭)")
+    parser.add_argument('--no-save_ckpt', action='store_false', dest='save_ckpt', help="不保存检查点 (默认: 保存)")
     parser.set_defaults(save_ckpt=True)
-    parser.add_argument("--save_ckpt_freq", default=5, type=int, help="保存检查点的频率")
-    parser.add_argument("--save_ckpt_num", default=20, type=int, help="保存检查点的数量")
+    parser.add_argument("--save_ckpt_freq", default=1, type=int, help="保存检查点的频率")
+    parser.add_argument("--save_ckpt_num", default=100, type=int, help="保存检查点的数量")
     parser.add_argument("--start_epoch", default=0, type=int, help="起始轮数")
     parser.add_argument("--mode", default="train", choices=["train", "eval", "move"], type=str, help="运行模式: train(训练), eval(评估), move(移动分类图片)")
     parser.add_argument("--move_dir", default="", type=str, help="需要移动分类的图片路径(仅move模式有效)")
     parser.add_argument("--num_workers", default=8, type=int, help="数据加载器的工作进程数")
-    parser.add_argument('--use_amp', action='store_true', help="是否使用PyTorch的AMP")
-    parser.add_argument('--no-use_amp', action='store_false', dest='use_amp', help="不使用PyTorch的AMP")
+    parser.add_argument('--no-use_amp', action='store_false', dest='use_amp', help="不使用PyTorch的AMP (默认: 使用)")
     parser.set_defaults(use_amp=True)
 
     # 分布式训练参数
     parser.add_argument("--world_size", default=1, type=int, help="分布式进程数")
     parser.add_argument("--local_rank", default=-1, type=int, help="本地rank")
-    parser.add_argument('--dist_on_itp', action='store_true', help="是否在ITP上进行分布式训练")
-    parser.add_argument('--no-dist_on_itp', action='store_false', dest='dist_on_itp', help="不在ITP上进行分布式训练")
-    parser.set_defaults(dist_on_itp=False)
+    parser.add_argument('--dist_on_itp', action='store_true', help="在ITP上进行分布式训练 (默认: 关闭)")
     parser.add_argument("--dist_url", default="env://", help="用于设置分布式训练的URL")
 
 
     # Weights and Biases参数
-    parser.add_argument('--enable_wandb', action='store_true', help="启用Weights and Biases日志记录")
-    parser.add_argument('--no-enable_wandb', action='store_false', dest='enable_wandb', help="不启用Weights and Biases日志记录")
-    parser.set_defaults(enable_wandb=False)
+    parser.add_argument('--enable_wandb', action='store_true', help="启用Weights and Biases日志记录 (默认: 关闭)")
     parser.add_argument("--project",default="classification",type=str,help="发送新运行的W&B项目的名称")
-    parser.add_argument('--wandb_ckpt', action='store_true', help="将模型检查点保存为W&B工件")
-    parser.add_argument('--no-wandb_ckpt', action='store_false', dest='wandb_ckpt', help="不将模型检查点保存为W&B工件")
-    parser.set_defaults(wandb_ckpt=False)
+    parser.add_argument('--wandb_ckpt', action='store_true', help="将模型检查点保存为W&B工件 (默认: 关闭)")
 
     return parser
 

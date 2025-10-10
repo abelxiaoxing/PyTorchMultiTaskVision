@@ -9,3 +9,7 @@ __pycache__/
 *.log
 *.pyc
 *.pth
+ai_python/
+model_data/
+.spec-workflow/
+.claude/

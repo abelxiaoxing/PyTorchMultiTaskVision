@@ -66,7 +66,7 @@ def build_dataset(args, eval_only=False):
     _print_transform(train_transform, "Train")
     _print_transform(val_transform, "Validation")
 
-    if args.train_split_rato == 0:  # 如果数据集是手动设置
+    if args.train_split_ratio == 0:  # 如果数据集是手动设置
         # 手动设置训练集和验证集路径
         train_root = os.path.join(args.data_path, "train")
         val_root = os.path.join(args.data_path, "val")
@@ -79,7 +79,7 @@ def build_dataset(args, eval_only=False):
         class_indices = train_dataset.class_to_idx
     else:  # 如果数据集是自动生成
         dataset_root = args.data_path
-        train_ratio = args.train_split_rato
+        train_ratio = args.train_split_ratio
         train_dataset, val_dataset, class_indices = split_dataset(dataset_root, train_ratio)
 
         # 应用转换到训练集和验证集

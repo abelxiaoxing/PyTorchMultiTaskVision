@@ -4,7 +4,7 @@ import torch
 from timm.data import Mixup
 from timm.utils import accuracy, ModelEmaV3
 from rich.progress import Progress
-import utils
+import utils.utils as utils
 import time
 
 def update_metrics(preds, targets, true_positives, false_positives, false_negatives):
@@ -170,13 +170,9 @@ def evaluate(data_loader, model, device, num_classes, use_amp=False):
         images = images.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
 
-        if use_amp:
-            with torch.amp.autocast('cuda'):
-                output = model(images)
-                loss = criterion(output, target)
-        else:
-            output = model(images)
-            loss = criterion(output, target)
+
+        output = model(images)
+        loss = criterion(output, target)
 
         # 转换输出为预测类别
         _, preds = torch.max(output, 1)
