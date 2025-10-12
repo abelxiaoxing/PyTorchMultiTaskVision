@@ -13,15 +13,15 @@ from nets.yolo_training import (
 )
 from utils.callbacks import EvalCallback, LossHistory
 from utils.dataloader import YoloDataset, yolo_dataset_collate
+from utils.coco_dataloader import CocoYoloDataset, coco_dataset_collate
 from utils.utils import get_anchors, get_classes, show_config
 from utils.utils_fit import fit_one_epoch
+from utils.coco_utils import validate_coco_annotations, get_coco_statistics, get_coco_class_mapping
 from pathlib import Path
-from utils_coco.coco_annotation import coco_annotation
 import utils.utils as utils
 
 
 def train_detection(
-    mid=11,
     device: str = "cuda",
     resume="",
     input_size=224,
@@ -37,13 +37,11 @@ def train_detection(
     focal_loss=False,
     data_path="",
 ):
-    coco_annotation(data_path=data_path, mid=mid)
 
     lr_scheduler = "cosine"
     pretrained = True
     focal_alpha = 0.25
     focal_gamma = 2
-    classes_path = Path("train_det/" + str(mid) + "/classes.txt")
     anchors_mask = [[6, 7, 8], [3, 4, 5], [0, 1, 2]]
     mosaic_prob = 0.5
     mixup_prob = 0.5
@@ -55,15 +53,45 @@ def train_detection(
     device = torch.device(device)
     Freeze_Train = True
     momentum = 0.937
-    save_dir = Path("train_det/" + str(mid) + "/output")
+    save_dir = Path("train_det/output")
     os.makedirs(save_dir, exist_ok=True)
-    figure_dir = Path("train_det/" + str(mid) + "/figure")
+    figure_dir = Path("train_det/figure")
     eval_flag = True
     num_workers = 1
-    train_annotation_path = Path("train_det/" + str(mid) + "/train.txt")
-    val_annotation_path = Path("train_det/" + str(mid) + "/val.txt")
 
-    class_names, num_classes = get_classes(classes_path)
+    # 使用COCO API的新方式
+    print("使用COCO API加载数据集... (哈雷酱大小姐推荐！)")
+
+    # 验证COCO标注文件
+    train_annotation_path = Path(data_path) / "annotations" / "instances_train2017.json"
+    val_annotation_path = Path(data_path) / "annotations" / "instances_val2017.json"
+    train_image_path = Path(data_path) / "train2017"
+    val_image_path = Path(data_path) / "val2017"
+
+    # 验证标注文件
+    for ann_file in [train_annotation_path, val_annotation_path]:
+        is_valid, msg = validate_coco_annotations(str(ann_file))
+        if not is_valid:
+            raise ValueError(f"COCO标注文件验证失败: {ann_file}, 错误: {msg}")
+
+    # 获取COCO统计信息
+    train_stats = get_coco_statistics(str(train_annotation_path))
+    val_stats = get_coco_statistics(str(val_annotation_path))
+
+    print(f"训练集统计: {train_stats['num_images']} 张图片, {train_stats['num_annotations']} 个标注")
+    print(f"验证集统计: {val_stats['num_images']} 张图片, {val_stats['num_annotations']} 个标注")
+
+    # 获取类别信息
+    class_mapping = get_coco_class_mapping(str(train_annotation_path))
+    class_names = list(class_mapping.values())
+    num_classes = len(class_names)
+
+    print(f"类别数量: {num_classes}")
+    print(f"类别列表: {class_names[:5]}...")  # 只显示前5个类别
+
+    num_train = train_stats['num_images']
+    num_val = val_stats['num_images']
+
     anchors, num_anchors = get_anchors(
         "12, 16, 19, 36, 40, 28, 36, 75, 76, 55, 72, 146, 142, 110, 192, 243, 459, 401"
     )
@@ -90,15 +118,10 @@ def train_detection(
     if device.type == "cuda":
         cudnn.benchmark = True
     model_train = model_train.to(device)
-    with open(train_annotation_path, encoding="utf-8") as f:
-        train_lines = f.readlines()
-    with open(val_annotation_path, encoding="utf-8") as f:
-        val_lines = f.readlines()
-    num_train = len(train_lines)
-    num_val = len(val_lines)
 
+    # 显示配置信息
     show_config(
-        classes_path=classes_path,
+        classes_path="COCO API",
         resume=resume,
         input_size=input_size,
         start_epoch=start_epoch,
@@ -116,6 +139,7 @@ def train_detection(
         num_train=num_train,
         num_val=num_val,
     )
+
 
     UnFreeze_flag = False
     if Freeze_Train:
@@ -137,20 +161,43 @@ def train_detection(
     optimizer.add_param_group({"params": pg1, "weight_decay": weight_decay})
     optimizer.add_param_group({"params": pg2})
 
-    model, start_epoch = utils.auto_load_model(
-        resume=resume,
-        model=model,
-        optimizer=optimizer,
-        model_ema=None,
-        device=device,
-    )
+    # 创建一个简单的参数对象用于auto_load_model
+    class SimpleArgs:
+        def __init__(self):
+            self.auto_resume = False
+            self.resume = resume
+            self.model_ema = False
+            self.start_epoch = 0
+
+    args_obj = SimpleArgs()
+
+    # 尝试加载模型（如果有的话）
+    if resume:
+        try:
+            utils.auto_load_model(
+                args=args_obj,
+                model_without_ddp=model,
+                optimizer=optimizer,
+                loss_scaler=None,
+                model_ema=None,
+            )
+            start_epoch = args_obj.start_epoch
+        except Exception as e:
+            print(f"模型加载失败，使用从头训练: {e}")
+            start_epoch = 0
+    else:
+        start_epoch = 0
     lr_scheduler_func = get_lr_scheduler(lr_scheduler, lr, epochs)
     epoch_step = num_train // batch_size
     epoch_step_val = num_val // batch_size
-    train_dataset = YoloDataset(
-        train_lines,
-        input_size,
-        num_classes,
+
+    # 使用COCO API创建数据集
+    print("创建COCO YOLO数据集...")
+    train_dataset = CocoYoloDataset(
+        root=str(train_image_path),
+        annFile=str(train_annotation_path),
+        input_size=input_size,
+        num_classes=num_classes,
         epoch_length=epochs,
         mosaic=mosaic,
         mixup=mixup,
@@ -159,10 +206,11 @@ def train_detection(
         train=True,
         special_aug_ratio=special_aug_ratio,
     )
-    val_dataset = YoloDataset(
-        val_lines,
-        input_size,
-        num_classes,
+    val_dataset = CocoYoloDataset(
+        root=str(val_image_path),
+        annFile=str(val_annotation_path),
+        input_size=input_size,
+        num_classes=num_classes,
         epoch_length=epochs,
         mosaic=False,
         mixup=False,
@@ -171,6 +219,7 @@ def train_detection(
         train=False,
         special_aug_ratio=0,
     )
+    collate_fn = coco_dataset_collate
 
     train_sampler = None
     val_sampler = None
@@ -183,7 +232,7 @@ def train_detection(
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
-        collate_fn=yolo_dataset_collate,
+        collate_fn=collate_fn,
         sampler=train_sampler,
     )
     gen_val = DataLoader(
@@ -193,10 +242,13 @@ def train_detection(
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
-        collate_fn=yolo_dataset_collate,
+        collate_fn=collate_fn,
         sampler=val_sampler,
     )
 
+    # 评估回调
+    # 对于COCO API，我们使用图像ID列表
+    val_image_ids = val_dataset.image_ids if hasattr(val_dataset, 'image_ids') else []
     eval_callback = EvalCallback(
         model,
         input_size,
@@ -204,21 +256,14 @@ def train_detection(
         anchors_mask,
         class_names,
         num_classes,
-        val_lines,
+        val_image_ids,  # 使用图像ID列表
         figure_dir,
         device,
         eval_flag=eval_flag,
         period=eval_freq,
         num_epochs=epochs,
     )
-    config = {
-        "user": "root",
-        "password": "123456",
-        "host": "192.168.100.123",
-        "database": "datacenter",
-        "raise_on_warnings": True,
-        "port": 3306,
-    }
+
     temp_map = 0
     last_map = temp_map
     for epoch in range(start_epoch, epochs):
@@ -271,4 +316,11 @@ def train_detection(
 
 
 if __name__ == "__main__":
-    train_detection(data_path='C:/datas/COCO2017')
+    train_detection(
+        data_path='C:/datas/COCO2017',
+        input_size=640,     # YOLO标准输入尺寸
+        batch_size=16,      # 根据GPU内存调整
+        epochs=10,          # 测试用较少的轮数
+        save_ckpt_freq=5,   # 更频繁保存检查点
+        eval_freq=5,        # 更频繁评估
+    )

@@ -34,13 +34,10 @@ def generate_classes(categories, output_path):
         for category in categories:
             f.write(f"{category['name']}\n")
 
-def coco_annotation(
-        data_path = "coco_dataset",
-        mid = 11
-):       
-    train_output_path = Path("train_det/" + str(mid) + "/train.txt")
-    val_output_path = Path("train_det/" + str(mid) + "/val.txt")
-    classes_output_path = Path("train_det/" + str(mid) + "/classes.txt")
+def coco_annotation(data_path = "coco_dataset"):       
+    train_output_path = Path("train_det/train.txt")
+    val_output_path = Path("train_det/val.txt")
+    classes_output_path = Path("train_det/classes.txt")
     train_output_path.parent.mkdir(parents=True, exist_ok=True)  # 创建目录（如果不存在的话）
     annotation_path = data_path + "/annotation.json"
     with open(annotation_path, encoding="utf-8") as f:
