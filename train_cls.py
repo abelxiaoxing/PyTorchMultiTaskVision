@@ -1,23 +1,59 @@
 import argparse
 import datetime
-import numpy as np
-import time
-import torch
-import torch.backends.cudnn as cudnn
 import json
 import os
-from pathlib import Path
-from timm.data.mixup import Mixup
-from timm.models import create_model
-from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
-from timm.utils import ModelEmaV3
-from optim_factory import create_optimizer
-from datasets import build_dataset, build_transform
-from engine import train_one_epoch, evaluate
-from utils.utils import NativeScalerWithGradNormCount as NativeScaler
-import utils.utils as utils
 import shutil
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import torch
+import torch.backends.cudnn as cudnn
 from PIL import Image
+from timm.data.mixup import Mixup
+from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
+from timm.models import create_model
+from timm.utils import ModelEmaV3
+
+from datasets import build_dataset, build_transform
+from engine import evaluate, train_one_epoch
+from optim_factory import create_optimizer
+from utils.utils import (
+    NativeScalerWithGradNormCount as NativeScaler,
+    TensorboardLogger,
+    WandbLogger,
+    RASampler,
+    auto_load_model,
+    cosine_scheduler,
+    get_rank,
+    get_world_size,
+    init_distributed_mode,
+    is_main_process,
+    save_model,
+)
+
+
+@dataclass
+class TrainingComponents:
+    model: torch.nn.Module
+    model_without_ddp: torch.nn.Module
+    model_ema: Optional[ModelEmaV3]
+    optimizer: torch.optim.Optimizer
+    loss_scaler: NativeScaler
+    criterion: torch.nn.Module
+    mixup_fn: Optional[Mixup]
+    n_parameters: int
+
+
+@dataclass
+class DataLoaders:
+    train: torch.utils.data.DataLoader
+    val: torch.utils.data.DataLoader
+    num_classes: int
+    train_size: int
+    val_size: int
 
 
 def get_args_parser():
@@ -91,39 +127,68 @@ def get_args_parser():
 
 def setup(args):
     """初始化分布式模式和随机种子"""
-    utils.init_distributed_mode(args)
+    init_distributed_mode(args)
     device = torch.device(args.device)
-    seed = args.seed + utils.get_rank()
+    seed = args.seed + get_rank()
     torch.manual_seed(seed)
     np.random.seed(seed)
     cudnn.benchmark = True
     return device
 
+
+def create_val_loader(dataset, args):
+    """构建验证/评估 DataLoader"""
+    sampler_val = torch.utils.data.SequentialSampler(dataset)
+    return torch.utils.data.DataLoader(
+        dataset,
+        sampler=sampler_val,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        pin_memory=True,
+    )
+
+
+def create_train_sampler(dataset_train, args):
+    """构建训练采样器"""
+    num_tasks = get_world_size()
+    global_rank = get_rank()
+    if args.RASampler:
+        return RASampler(dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True)
+    return torch.utils.data.DistributedSampler(
+        dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True, seed=args.seed
+    )
+
+
+def build_schedulers(args, steps_per_epoch):
+    """返回学习率和权重衰减调度表"""
+    lr_schedule_values = cosine_scheduler(
+        args.lr, args.min_lr, args.epochs, steps_per_epoch, warmup_epochs=args.warmup_epochs
+    )
+    if args.weight_decay_end is None:
+        args.weight_decay_end = args.weight_decay
+    wd_schedule_values = cosine_scheduler(
+        args.weight_decay, args.weight_decay_end, args.epochs, steps_per_epoch
+    )
+    return lr_schedule_values, wd_schedule_values
+
 def prepare_data(args):
     """准备数据集和数据加载器"""
     dataset_train, dataset_val, num_classes = build_dataset(args=args)
-    num_tasks = utils.get_world_size()
-    global_rank = utils.get_rank()
-
-    if args.RASampler:
-        sampler_train = utils.RASampler(dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True)
-    else:
-        sampler_train = torch.utils.data.DistributedSampler(
-            dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True, seed=args.seed
-        )
+    sampler_train = create_train_sampler(dataset_train, args)
     print(f"训练采样器 = {sampler_train}")
-
-    sampler_val = torch.utils.data.SequentialSampler(dataset_val)
 
     data_loader_train = torch.utils.data.DataLoader(
         dataset_train, sampler=sampler_train, batch_size=args.batch_size,
         num_workers=args.num_workers, pin_memory=True, drop_last=True,
     )
-    data_loader_val = torch.utils.data.DataLoader(
-        dataset_val, sampler=sampler_val, batch_size=args.batch_size,
-        num_workers=args.num_workers, pin_memory=True,
+    data_loader_val = create_val_loader(dataset_val, args)
+    return DataLoaders(
+        train=data_loader_train,
+        val=data_loader_val,
+        num_classes=num_classes,
+        train_size=len(dataset_train),
+        val_size=len(dataset_val),
     )
-    return data_loader_train, data_loader_val, num_classes, dataset_train, dataset_val
 
 def prepare_model(args, num_classes, device):
     """准备模型、EMA、优化器和损失函数"""
@@ -157,13 +222,22 @@ def prepare_model(args, num_classes, device):
     criterion = SoftTargetCrossEntropy() if mixup_fn else LabelSmoothingCrossEntropy()
     print(f"损失函数 = {criterion}")
 
-    return model, model_without_ddp, model_ema, optimizer, loss_scaler, criterion, mixup_fn, n_parameters
+    return TrainingComponents(
+        model=model,
+        model_without_ddp=model_without_ddp,
+        model_ema=model_ema,
+        optimizer=optimizer,
+        loss_scaler=loss_scaler,
+        criterion=criterion,
+        mixup_fn=mixup_fn,
+        n_parameters=n_parameters,
+    )
 
 def setup_logging(args):
-    if utils.is_main_process():
+    if is_main_process():
         os.makedirs("train_cls/log_dir", exist_ok=True)
-        log_writer = utils.TensorboardLogger(log_dir="train_cls/log_dir")
-        wandb_logger = utils.WandbLogger(args) if args.enable_wandb else None
+        log_writer = TensorboardLogger(log_dir="train_cls/log_dir")
+        wandb_logger = WandbLogger(args) if args.enable_wandb else None
     else:
         log_writer, wandb_logger = None, None
     return log_writer, wandb_logger
@@ -172,7 +246,7 @@ def save_checkpoint(args, epoch, model_without_ddp, optimizer, loss_scaler, mode
     """保存模型检查点"""
     if not args.save_ckpt:
         return
-    utils.save_model(
+    save_model(
         args=args,
         input_shape=input_shape,
         model=model_without_ddp,
@@ -192,13 +266,16 @@ def update_log_stats(test_stats, test_stats_ema=None):
     
     return log_stats
 
-def run_evaluation(args, model, model_without_ddp, model_ema, data_loader_val, device, num_classes, epoch, log_writer, wandb_logger, max_accuracy, max_accuracy_ema, optimizer, loss_scaler):
+def run_evaluation(args, components: TrainingComponents, data: DataLoaders, device, epoch, log_writer, wandb_logger, max_accuracy, max_accuracy_ema):
     """运行评估并记录结果"""
-    test_stats = evaluate(data_loader_val, model, device, num_classes=num_classes, use_amp=args.use_amp)
-    print(f"模型在{len(data_loader_val.dataset)}张测试图像上的准确率: {test_stats['acc1']:.3f}%")
+    test_stats = evaluate(data.val, components.model, device, num_classes=data.num_classes, use_amp=args.use_amp)
+    print(f"模型在{data.val_size}张测试图像上的准确率: {test_stats['acc1']:.3f}%")
     if max_accuracy < test_stats["acc1"]:
         max_accuracy = test_stats["acc1"]
-        save_checkpoint(args, "best", model_without_ddp, optimizer, loss_scaler, model_ema, num_classes, (1, 3, args.input_size, args.input_size))
+        save_checkpoint(
+            args, "best", components.model_without_ddp, components.optimizer, components.loss_scaler,
+            components.model_ema, data.num_classes, (1, 3, args.input_size, args.input_size)
+        )
     print(f"最高准确率: {max_accuracy:.3f}%")
 
     if log_writer is not None:
@@ -207,12 +284,15 @@ def run_evaluation(args, model, model_without_ddp, model_ema, data_loader_val, d
 
     log_stats = update_log_stats(test_stats)
 
-    if args.model_ema:
-        test_stats_ema = evaluate(data_loader_val, model_ema.module, device, num_classes, use_amp=args.use_amp)
-        print(f"EMA模型在{len(data_loader_val.dataset)}张测试图像上的准确率: {test_stats_ema['acc1']:.1f}%")
+    if args.model_ema and components.model_ema:
+        test_stats_ema = evaluate(data.val, components.model_ema.module, device, data.num_classes, use_amp=args.use_amp)
+        print(f"EMA模型在{data.val_size}张测试图像上的准确率: {test_stats_ema['acc1']:.1f}%")
         if max_accuracy_ema < test_stats_ema["acc1"]:
             max_accuracy_ema = test_stats_ema["acc1"]
-            save_checkpoint(args, "best-ema", model_without_ddp, optimizer, loss_scaler, model_ema, num_classes, (1, 3, args.input_size, args.input_size))
+            save_checkpoint(
+                args, "best-ema", components.model_without_ddp, components.optimizer, components.loss_scaler,
+                components.model_ema, data.num_classes, (1, 3, args.input_size, args.input_size)
+            )
         print(f"最高EMA准确率: {max_accuracy_ema:.2f}%")
         if log_writer is not None:
             log_writer.update(test_acc1_ema=test_stats_ema["acc1"], head="perf", step=epoch)
@@ -220,41 +300,41 @@ def run_evaluation(args, model, model_without_ddp, model_ema, data_loader_val, d
 
     return log_stats, max_accuracy, max_accuracy_ema
 
-def run_training_loop(args, model, model_without_ddp, model_ema, data_loader_train, data_loader_val, device, num_classes, criterion, optimizer, loss_scaler, mixup_fn, log_writer, wandb_logger, n_parameters):
+def run_training_loop(args, components: TrainingComponents, data: DataLoaders, device, log_writer, wandb_logger):
     max_accuracy, max_accuracy_ema = 0.0, 0.0
     print(f"开始训练 {args.epochs} 轮")
     start_time = time.time()
 
-    total_batch_size = args.batch_size * args.update_freq * utils.get_world_size()
-    num_training_steps_per_epoch = len(data_loader_train.dataset) // total_batch_size
+    total_batch_size = args.batch_size * args.update_freq * get_world_size()
+    num_training_steps_per_epoch = data.train_size // total_batch_size
 
-    lr_schedule_values = utils.cosine_scheduler(args.lr, args.min_lr, args.epochs, num_training_steps_per_epoch, warmup_epochs=args.warmup_epochs)
-    if args.weight_decay_end is None:
-        args.weight_decay_end = args.weight_decay
-    wd_schedule_values = utils.cosine_scheduler(args.weight_decay, args.weight_decay_end, args.epochs, num_training_steps_per_epoch)
+    lr_schedule_values, wd_schedule_values = build_schedulers(args, num_training_steps_per_epoch)
 
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
-            data_loader_train.sampler.set_epoch(epoch)
+            data.train.sampler.set_epoch(epoch)
         if log_writer:
             log_writer.set_step(epoch * num_training_steps_per_epoch * args.update_freq)
         if wandb_logger:
             wandb_logger.set_steps()
 
         train_stats = train_one_epoch(
-            model, criterion, data_loader_train, optimizer, device, epoch, loss_scaler,
-            args.clip_grad, model_ema, mixup_fn, log_writer=log_writer, wandb_logger=wandb_logger,
+            components.model, components.criterion, data.train, components.optimizer, device, epoch, components.loss_scaler,
+            args.clip_grad, components.model_ema, components.mixup_fn, log_writer=log_writer, wandb_logger=wandb_logger,
             start_steps=epoch * num_training_steps_per_epoch, lr_schedule_values=lr_schedule_values,
             wd_schedule_values=wd_schedule_values, num_training_steps_per_epoch=num_training_steps_per_epoch,
-            update_freq=args.update_freq, use_amp=args.use_amp, num_classes=num_classes
+            update_freq=args.update_freq, use_amp=args.use_amp, num_classes=data.num_classes
         )
 
         if (epoch + 1) % args.save_ckpt_freq == 0 or epoch + 1 == args.epochs:
-            save_checkpoint(args, epoch, model_without_ddp, optimizer, loss_scaler, model_ema, num_classes, (1, 3, args.input_size, args.input_size))
+            save_checkpoint(
+                args, epoch, components.model_without_ddp, components.optimizer, components.loss_scaler,
+                components.model_ema, data.num_classes, (1, 3, args.input_size, args.input_size)
+            )
 
         eval_log_stats, max_accuracy, max_accuracy_ema = run_evaluation(
-            args, model, model_without_ddp, model_ema, data_loader_val, device, num_classes, epoch,
-            log_writer, wandb_logger, max_accuracy, max_accuracy_ema, optimizer, loss_scaler
+            args, components, data, device, epoch,
+            log_writer, wandb_logger, max_accuracy, max_accuracy_ema
         )
 
         log_stats = {
@@ -262,10 +342,10 @@ def run_training_loop(args, model, model_without_ddp, model_ema, data_loader_tra
             **{f"train_{k}": v for k, v in train_stats.items()},
             **eval_log_stats,
             "epoch": epoch,
-            "n_parameters": f"{n_parameters / 1e6:.2f}M",
+            "n_parameters": f"{components.n_parameters / 1e6:.2f}M",
         }
 
-        if utils.is_main_process():
+        if is_main_process():
             if log_writer:
                 log_writer.flush()
             with open(os.path.join("train_cls/log.txt"), mode="a", encoding="utf-8") as f:
@@ -306,61 +386,75 @@ def load_model_for_inference(model_path, use_ema, device):
     return model_to_eval, num_classes
 
 
+def train_mode(args, device):
+    """训练模式入口"""
+    data = prepare_data(args)
+    components = prepare_model(args, data.num_classes, device)
+    auto_load_model(
+        args=args,
+        model_without_ddp=components.model_without_ddp,
+        optimizer=components.optimizer,
+        loss_scaler=components.loss_scaler,
+        model_ema=components.model_ema,
+    )
+
+    log_writer, wandb_logger = setup_logging(args)
+    total_batch_size = args.batch_size * args.update_freq * get_world_size()
+    num_training_steps_per_epoch = data.train_size // total_batch_size
+    print(f"学习率 = {args.lr:.8f}, 批处理大小 = {total_batch_size}, 更新频率 = {args.update_freq}")
+    print(f"训练样本数 = {data.train_size}, 验证样本数 = {data.val_size},每轮训练步数 = {num_training_steps_per_epoch}")
+
+    run_training_loop(args, components, data, device, log_writer, wandb_logger)
+
+
+def eval_mode(args, device):
+    """仅评估模式"""
+    print("仅评估模式")
+    model_to_eval, num_classes = load_model_for_inference(args.resume, args.model_ema, device)
+    _, dataset_val, _ = build_dataset(args, eval_only=True)
+    data_loader_val = create_val_loader(dataset_val, args)
+    test_stats = evaluate(data_loader_val, model_to_eval, device, num_classes=num_classes, use_amp=args.use_amp)
+    print(f"网络在{len(dataset_val)}张测试图像上的准确率: {test_stats['acc1']:.5f}%")
+
+
+def move_mode(args, device):
+    """移动分类图片模式"""
+    model, _ = load_model_for_inference(args.resume, args.model_ema, device)
+    print(f"开始从 '{args.move_dir}' 移动图片...")
+    empty_path = os.path.join(os.path.dirname(args.move_dir), "Empty")
+    non_empty_path = os.path.join(os.path.dirname(args.move_dir), "NonEmpty")
+    os.makedirs(empty_path, exist_ok=True)
+    os.makedirs(non_empty_path, exist_ok=True)
+
+    data_transform = build_transform(is_train=False, args=args)
+
+    for file_name in os.listdir(args.move_dir):
+        file_path = os.path.join(args.move_dir, file_name)
+        if not os.path.isfile(file_path):
+            continue
+        img = Image.open(file_path).convert("RGB")
+        img = data_transform(img).unsqueeze(0).to(device)
+
+        with torch.no_grad():
+            output = torch.squeeze(model(img)).cpu()
+            predict = torch.softmax(output, dim=0)
+
+        predicted_class_index = torch.argmax(predict).item()
+        target_path = empty_path if predicted_class_index == 0 else non_empty_path
+        shutil.move(file_path, os.path.join(target_path, file_name))
+    print("图片移动完成。" )
+
+
 def main(args):
-    """主函数"""
+    """模式分发主入口"""
     device = setup(args)
     print(args)
-
-    if args.mode == "train":
-        data_loader_train, data_loader_val, num_classes, dataset_train, dataset_val = prepare_data(args)
-        model, model_without_ddp, model_ema, optimizer, loss_scaler, criterion, mixup_fn, n_parameters = prepare_model(args, num_classes, device)
-        utils.auto_load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler, model_ema=model_ema)
-        
-        log_writer, wandb_logger = setup_logging(args)
-        total_batch_size = args.batch_size * args.update_freq * utils.get_world_size()
-        num_training_steps_per_epoch = len(dataset_train) // total_batch_size
-        print(f"学习率 = {args.lr:.8f}, 批处理大小 = {total_batch_size}, 更新频率 = {args.update_freq}")
-        print(f"训练样本数 = {len(dataset_train)}, 验证样本数 = {len(dataset_val)},每轮训练步数 = {num_training_steps_per_epoch}")
-
-        run_training_loop(args, model, model_without_ddp, model_ema, data_loader_train, data_loader_val, device, num_classes, criterion, optimizer, loss_scaler, mixup_fn, log_writer, wandb_logger, n_parameters)
-
-    elif args.mode == "eval":
-        print("仅评估模式")
-        model_to_eval, num_classes = load_model_for_inference(args.resume, args.model_ema, device)
-        _, dataset_val, _ = build_dataset(args, eval_only=True)
-        sampler_val = torch.utils.data.SequentialSampler(dataset_val)
-        data_loader_val = torch.utils.data.DataLoader(
-            dataset_val, sampler=sampler_val, batch_size=args.batch_size,
-            num_workers=args.num_workers, pin_memory=True,
-        )
-        test_stats = evaluate(data_loader_val, model_to_eval, device, num_classes=num_classes, use_amp=args.use_amp)
-        print(f"网络在{len(dataset_val)}张测试图像上的准确率: {test_stats['acc1']:.5f}%")
-
-    elif args.mode == "move":
-        model, _ = load_model_for_inference(args.resume, args.model_ema, device)
-        print(f"开始从 '{args.move_dir}' 移动图片...")
-        empty_path = os.path.join(os.path.dirname(args.move_dir), "Empty")
-        non_empty_path = os.path.join(os.path.dirname(args.move_dir), "NonEmpty")
-        os.makedirs(empty_path, exist_ok=True)
-        os.makedirs(non_empty_path, exist_ok=True)
-
-        data_transform = build_transform(is_train=False, args=args)
-
-        for file_name in os.listdir(args.move_dir):
-            file_path = os.path.join(args.move_dir, file_name)
-            if not os.path.isfile(file_path):
-                continue
-            img = Image.open(file_path).convert("RGB")
-            img = data_transform(img).unsqueeze(0).to(device)
-
-            with torch.no_grad():
-                output = torch.squeeze(model(img)).cpu()
-                predict = torch.softmax(output, dim=0)
-
-            predicted_class_index = torch.argmax(predict).item()
-            target_path = empty_path if predicted_class_index == 0 else non_empty_path
-            shutil.move(file_path, os.path.join(target_path, file_name))
-        print("图片移动完成。" )
+    mode_runner = {
+        "train": train_mode,
+        "eval": eval_mode,
+        "move": move_mode,
+    }
+    mode_runner[args.mode](args, device)
 
 
 if __name__ == "__main__":
