@@ -58,7 +58,7 @@ def get_args_parser():
     parser.add_argument("--cutmix", type=float, default=0., help="cutmix系数")
 
     # 数据集参数
-    parser.add_argument("--data_path",default="datas",type=str, help="数据路径")
+    parser.add_argument("--data_path",default="../../datas/flower_photos",type=str, help="数据路径")
     parser.add_argument("--train_split_ratio",default=0.8,type=float,help="0为手动分割，其他0到1的浮点数为训练集自动分割的比例")
     parser.add_argument("--device", default="cuda", help="设备")
     parser.add_argument("--seed", default=88, type=int, help="随机种子")

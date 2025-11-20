@@ -13,3 +13,5 @@ ai_python/
 model_data/
 .spec-workflow/
 .claude/
+*CLAUDE.md
+.python-version
