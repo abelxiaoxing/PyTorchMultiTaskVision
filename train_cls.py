@@ -247,7 +247,7 @@ def save_checkpoint(args, epoch, model_without_ddp, optimizer, loss_scaler, mode
     if not args.save_ckpt:
         return
     save_model(
-        args=args,
+        output_dir=Path("train_cls/output"),
         input_shape=input_shape,
         model=model_without_ddp,
         optimizer=optimizer,
@@ -255,6 +255,8 @@ def save_checkpoint(args, epoch, model_without_ddp, optimizer, loss_scaler, mode
         loss_scaler=loss_scaler,
         model_ema=model_ema,
         num_classes=num_classes,
+        save_ckpt_num=args.save_ckpt_num,
+        save_ckpt_freq=args.save_ckpt_freq,
     )
 
 def update_log_stats(test_stats, test_stats_ema=None):

@@ -10,6 +10,7 @@ import torch
 import torch.distributed as dist
 from torch import inf
 from tensorboardX import SummaryWriter
+from PIL import Image
 
 class RASampler(torch.utils.data.Sampler):
     def __init__(self, dataset, num_replicas=None, rank=None, shuffle=True):
@@ -522,33 +523,50 @@ def piecewise_scheduler(base_value, final_value, epochs, niter_per_ep, warmup_ep
     assert len(schedule) == epochs * niter_per_ep
     return schedule
             
-def save_model(args,input_shape, epoch, model, optimizer, loss_scaler, model_ema, num_classes):
+def save_model(
+    output_dir,
+    input_shape=None,
+    epoch=None,
+    model=None,
+    optimizer=None,
+    loss_scaler=None,
+    model_ema=None,
+    num_classes=None,
+    save_ckpt_num=None,
+    save_ckpt_freq=None,
+):
+    """
+    保存模型权重，兼容分类与检测。要求显式传入 output_dir，避免默认路径歧义。
+    """
     epoch_name = str(epoch)
-    output_dir = Path("./train_cls/output")
-    checkpoint_paths = [output_dir / ("checkpoint-%s.pth" % epoch_name)]
-    for checkpoint_path in checkpoint_paths:
-        to_save = {
-            "model": model,  # 保存模型
-            "optimizer": optimizer.state_dict(),  # 保存优化器状态
-            "epoch": epoch,  # 保存当前轮次
-            'scaler': loss_scaler.state_dict(),
-            "input_shape": input_shape, # 保存输入形状
-            "num_classes": num_classes,
-            "args": args,  # 保存命令行参数
-        }
-        if model_ema is not None:
-            to_save["model_ema"] = get_state_dict(model_ema)  # 保存指数移动平均模型
-        save_on_master(to_save, checkpoint_path)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = output_dir / ("checkpoint-%s.pth" % epoch_name)
 
-    if is_main_process() and isinstance(epoch, int):
-        to_del = epoch - args.save_ckpt_num * args.save_ckpt_freq
-        old_ckpt = output_dir / ('checkpoint-%s.pth' % to_del)
+    to_save = {
+        "model": model,  # 保存模型或其 state_dict
+        "optimizer": optimizer.state_dict() if optimizer is not None else None,
+        "epoch": epoch,
+        "input_shape": input_shape,
+    }
+    if loss_scaler is not None:
+        to_save["scaler"] = loss_scaler.state_dict()
+    if num_classes is not None:
+        to_save["num_classes"] = num_classes
+    if model_ema is not None:
+        to_save["model_ema"] = get_state_dict(model_ema)
+    save_on_master(to_save, checkpoint_path)
+
+    # 仅当提供保留策略时执行旧检查点清理
+    if is_main_process() and isinstance(epoch, int) and save_ckpt_num and save_ckpt_freq:
+        to_del = epoch - save_ckpt_num * save_ckpt_freq
+        old_ckpt = output_dir / ("checkpoint-%s.pth" % to_del)
         if os.path.exists(old_ckpt):
             os.remove(old_ckpt)
 
 
 def auto_load_model(args,model_without_ddp, optimizer, loss_scaler, model_ema=None):
-    output_dir = Path("./train_cls/output")
+    output_dir = Path(getattr(args, "output_dir", "./train_cls/output"))
     if args.auto_resume and len(args.resume) == 0:
         import glob
         all_checkpoints = glob.glob(os.path.join(output_dir, 'checkpoint-*.pth'))
@@ -568,7 +586,13 @@ def auto_load_model(args,model_without_ddp, optimizer, loss_scaler, model_ema=No
         else:
             print(args.resume)
             checkpoint = torch.load(args.resume, map_location='cpu',weights_only=False) 
-            state_dict = checkpoint["model"].state_dict()
+            raw_model = checkpoint["model"]
+            if isinstance(raw_model, torch.nn.Module):
+                state_dict = raw_model.state_dict()
+            elif isinstance(raw_model, dict):
+                state_dict = raw_model
+            else:
+                raise TypeError(f"Unsupported checkpoint['model'] type: {type(raw_model)}")
 
         # 获取模型当前的state_dict，用于比对
         model_state_dict = model_without_ddp.state_dict()

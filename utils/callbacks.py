@@ -118,6 +118,7 @@ class EvalCallback:
         val_lines,
         figure_dir,
         device,
+        val_dataset=None,
         map_out_path=".temp_map_out",
         max_boxes=100,
         confidence=0.05,
@@ -148,6 +149,7 @@ class EvalCallback:
         self.figure_dir = figure_dir
         # 定义设备
         self.device = device
+        self.val_dataset = val_dataset
         # 定义mAP的输出路径
         self.map_out_path = map_out_path
         # 定义最大检测到的框数
@@ -271,28 +273,45 @@ class EvalCallback:
         return
 
     def on_epoch_end(self, epoch, model_eval):
-        if (epoch % self.period == 0 or epoch == self.num_epochs - 1) and self.eval_flag:
+        current_epoch = epoch + 1
+        if ((current_epoch % self.period == 0) or (current_epoch == self.num_epochs)) and self.eval_flag:
             self.net = model_eval
-            if not os.path.exists(self.map_out_path):
-                os.makedirs(self.map_out_path)
+            if os.path.exists(self.map_out_path):
+                shutil.rmtree(self.map_out_path)
+            os.makedirs(self.map_out_path, exist_ok=True)
             if not os.path.exists(os.path.join(self.map_out_path, "ground-truth")):
                 os.makedirs(os.path.join(self.map_out_path, "ground-truth"))
             if not os.path.exists(os.path.join(self.map_out_path, "detection-results")):
                 os.makedirs(os.path.join(self.map_out_path, "detection-results"))
             print("Get map.")
             for annotation_line in tqdm(self.val_lines):
-                line = annotation_line.split()
-                image_id = os.path.basename(line[0]).split(".")[0]
-                # ------------------------------#
-                #   读取图像并转换成RGB图像
-                # ------------------------------#
-                image = Image.open(line[0])
-                # ------------------------------#
-                #   获得预测框
-                # ------------------------------#
-                gt_boxes = np.array(
-                    [np.array(list(map(int, box.split(",")))) for box in line[1:]]
-                )
+                if isinstance(annotation_line, str):
+                    line = annotation_line.split()
+                    image_id = os.path.basename(line[0]).split(".")[0]
+                    # ------------------------------#
+                    #   读取图像并转换成RGB图像
+                    # ------------------------------#
+                    image = Image.open(line[0])
+                    # ------------------------------#
+                    #   获得预测框
+                    # ------------------------------#
+                    gt_boxes = np.array(
+                        [np.array(list(map(int, box.split(",")))) for box in line[1:]]
+                    )
+                elif self.val_dataset is not None:
+                    image_id = annotation_line
+                    image, gt_boxes = self.val_dataset.get_image_and_annotations(
+                        image_id
+                    )
+                    image_id = os.path.splitext(
+                        self.val_dataset.img_info_cache[image_id]["file_name"]
+                    )[0]
+                    if gt_boxes.size != 0:
+                        gt_boxes = gt_boxes.astype(np.int32)
+                else:
+                    raise TypeError(
+                        "EvalCallback expects string annotation lines or a val_dataset reference."
+                    )
                 # ------------------------------#
                 #   获得预测txt
                 # ------------------------------#

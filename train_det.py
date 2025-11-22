@@ -33,7 +33,7 @@ def train_detection(
     lr=1e-3,
     opt="adamw",
     save_ckpt_freq=10,
-    eval_freq=10,
+    eval_freq=2,
     focal_loss=False,
     data_path="",
 ):
@@ -57,15 +57,15 @@ def train_detection(
     os.makedirs(save_dir, exist_ok=True)
     figure_dir = Path("train_det/figure")
     eval_flag = True
-    num_workers = 1
+    num_workers = 4
 
     # 使用COCO API的新方式
     print("使用COCO API加载数据集... (哈雷酱大小姐推荐！)")
 
     # 验证COCO标注文件
-    train_annotation_path = Path(data_path) / "annotations" / "instances_train2017.json"
+    train_annotation_path = Path(data_path) / "annotations" / "instances_val2017.json"
     val_annotation_path = Path(data_path) / "annotations" / "instances_val2017.json"
-    train_image_path = Path(data_path) / "train2017"
+    train_image_path = Path(data_path) / "val2017"
     val_image_path = Path(data_path) / "val2017"
 
     # 验证标注文件
@@ -168,6 +168,7 @@ def train_detection(
             self.resume = resume
             self.model_ema = False
             self.start_epoch = 0
+            self.output_dir = save_dir
 
     args_obj = SimpleArgs()
 
@@ -189,7 +190,7 @@ def train_detection(
         start_epoch = 0
     lr_scheduler_func = get_lr_scheduler(lr_scheduler, lr, epochs)
     epoch_step = num_train // batch_size
-    epoch_step_val = num_val // batch_size
+    epoch_step_val = (num_val + batch_size - 1) // batch_size
 
     # 使用COCO API创建数据集
     print("创建COCO YOLO数据集...")
@@ -223,11 +224,10 @@ def train_detection(
 
     train_sampler = None
     val_sampler = None
-    shuffle = True
 
     gen = DataLoader(
         train_dataset,
-        shuffle=shuffle,
+        shuffle=True,
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=True,
@@ -237,11 +237,11 @@ def train_detection(
     )
     gen_val = DataLoader(
         val_dataset,
-        shuffle=shuffle,
+        shuffle=False,
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=True,
-        drop_last=True,
+        drop_last=False,
         collate_fn=collate_fn,
         sampler=val_sampler,
     )
@@ -259,6 +259,7 @@ def train_detection(
         val_image_ids,  # 使用图像ID列表
         figure_dir,
         device,
+        val_dataset=val_dataset,
         eval_flag=eval_flag,
         period=eval_freq,
         num_epochs=epochs,

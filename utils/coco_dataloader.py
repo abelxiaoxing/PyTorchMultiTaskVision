@@ -85,18 +85,20 @@ class CocoYoloDataset(Dataset):
 
         # 获取类别映射
         self.class_mapping = get_coco_class_mapping(annFile)
-        if category_ids:
-            # 如果指定了类别，创建映射
-            self.category_to_class = {cat_id: i for i, cat_id in enumerate(category_ids)}
+        if not category_ids:
+            # 默认使用所有类别，避免传入None导致COCO返回空标注
+            self.category_ids = list(self.class_mapping.keys())
         else:
-            # 使用所有类别
-            self.category_to_class = {cat_id: i for i, cat_id in enumerate(self.class_mapping.keys())}
+            # 只使用指定类别，保持映射顺序一致
+            self.category_ids = category_ids
+            self.class_mapping = {cat_id: self.class_mapping[cat_id] for cat_id in self.category_ids}
+        self.category_to_class = {cat_id: i for i, cat_id in enumerate(self.category_ids)}
 
         # 获取图片列表
         self.image_ids = self.coco.getImgIds()
         if category_ids:
             # 过滤只包含指定类别的图片
-            self.image_ids = self._filter_images_by_categories(category_ids)
+            self.image_ids = self._filter_images_by_categories(self.category_ids)
 
         # 缓存图片信息以提高性能
         self.img_info_cache = {img_id: self.coco.loadImgs(img_id)[0] for img_id in self.image_ids}
@@ -462,12 +464,15 @@ class CocoYoloDataset(Dataset):
         new_image = (np.array(image_1, np.float32) * 0.5 +
                     np.array(image_2, np.float32) * 0.5)
 
-        if len(box_1) == 0:
-            new_boxes = box_2
-        elif len(box_2) == 0:
-            new_boxes = box_1
-        else:
-            new_boxes = box_1 + box_2
+        def to_box_array(box):
+            arr = np.asarray(box, dtype=np.float32)
+            if arr.size == 0:
+                return np.zeros((0, 5), dtype=np.float32)
+            return arr.reshape(-1, 5)
+
+        box_1_arr = to_box_array(box_1)
+        box_2_arr = to_box_array(box_2)
+        new_boxes = np.concatenate([box_1_arr, box_2_arr], axis=0)
 
         return new_image, new_boxes
 
