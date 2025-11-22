@@ -317,7 +317,7 @@ def train_detection(
 
 if __name__ == "__main__":
     train_detection(
-        data_path='C:/datas/COCO2017',
+        data_path='/home/abelxiaoxing/datas/COCO2017',
         input_size=640,     # YOLO标准输入尺寸
         batch_size=16,      # 根据GPU内存调整
         epochs=10,          # 测试用较少的轮数
