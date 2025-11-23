@@ -1,8 +1,8 @@
-import os
 import torch
 from tqdm import tqdm
-from utils.utils import get_lr
-import utils.utils as utils
+
+from utils.scheduler import get_lr
+from utils.checkpoint import save_model
 
 def fit_one_epoch(
     model_train,
@@ -105,7 +105,7 @@ def fit_one_epoch(
 
     # 保存模型权重
     if (epoch) % save_ckpt_freq == 0 or epoch == epochs:
-        utils.save_model(
+        save_model(
             output_dir=save_dir,
             input_shape=input_shape,
             model=model,
@@ -117,7 +117,7 @@ def fit_one_epoch(
         loss_history.val_loss
     ):
         print("保存最佳模型至 checkpoint-best.pth")
-        utils.save_model(
+        save_model(
             output_dir=save_dir,
             input_shape=input_shape,
             model=model,

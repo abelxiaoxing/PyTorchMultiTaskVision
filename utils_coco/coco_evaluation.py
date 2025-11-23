@@ -17,8 +17,7 @@ import cv2
 from pathlib import Path
 
 from nets.yolo import YoloBody
-from utils.utils import (cvtColor, get_anchors, get_classes, preprocess_input,
-                        resize_image, show_config)
+from utils.vision import cvtColor, get_anchors, preprocess_input, resize_image
 from utils.coco_utils import yolo_to_coco_bbox, get_coco_class_mapping
 
 

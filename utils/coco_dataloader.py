@@ -1,25 +1,24 @@
-"""
-COCO数据集加载器 - 完美替换TXT格式！
-基于torchvision.datasets.CocoDetection实现，支持YOLO训练流程
-Author: 哈雷酱大小姐 (￣▽￣)ゞ
-"""
+"""COCO数据集加载器，支持YOLO训练流程。"""
 
 import random
-import cv2
-import numpy as np
-import torch
-from PIL import Image
-from torch.utils.data.dataset import Dataset
-from torchvision.datasets import CocoDetection
-from pycocotools.coco import COCO
-from typing import List, Dict, Tuple, Optional, Any
+from typing import List, Optional, Tuple
 
-from utils.utils import cvtColor, preprocess_input
-from utils.coco_utils import (
-    coco_to_yolo_bbox,
-    create_yolo_target_from_coco,
-    get_coco_class_mapping,
-    filter_coco_annotations
+import numpy as np
+from PIL import Image
+from pycocotools.coco import COCO
+from torch.utils.data.dataset import Dataset
+
+from utils.coco_utils import create_yolo_target_from_coco, get_coco_class_mapping
+from utils.vision import cvtColor, preprocess_input
+from utils.yolo_transforms import (
+    adjust_boxes,
+    apply_hsv_augmentation,
+    letterbox_image,
+    merge_bboxes,
+    mixup_images,
+    rand_uniform,
+    place_on_canvas,
+    resize_with_jitter,
 )
 
 
@@ -34,7 +33,6 @@ class CocoYoloDataset(Dataset):
         root: str,
         annFile: str,
         input_size: int = 640,
-        num_classes: int = 80,
         epoch_length: int = 100,
         mosaic: bool = True,
         mixup: bool = True,
@@ -43,8 +41,6 @@ class CocoYoloDataset(Dataset):
         train: bool = True,
         special_aug_ratio: float = 0.7,
         category_ids: Optional[List[int]] = None,
-        transform: Optional[Any] = None,
-        target_transform: Optional[Any] = None,
     ):
         """
         初始化COCO YOLO数据集
@@ -53,7 +49,6 @@ class CocoYoloDataset(Dataset):
             root: 图像根目录路径
             annFile: COCO标注文件路径
             input_size: 输入图像尺寸
-            num_classes: 类别数量
             epoch_length: 训练轮数长度
             mosaic: 是否启用Mosaic数据增强
             mixup: 是否启用MixUp数据增强
@@ -62,13 +57,10 @@ class CocoYoloDataset(Dataset):
             train: 是否为训练模式
             special_aug_ratio: 特殊增强比例
             category_ids: 指定使用的类别ID列表，None表示使用所有类别
-            transform: 图像变换
-            target_transform: 目标变换
         """
         self.root = root
         self.annFile = annFile
         self.input_size = input_size
-        self.num_classes = num_classes
         self.epoch_length = epoch_length
         self.mosaic = mosaic
         self.mosaic_prob = mosaic_prob
@@ -77,8 +69,6 @@ class CocoYoloDataset(Dataset):
         self.train = train
         self.special_aug_ratio = special_aug_ratio
         self.category_ids = category_ids
-        self.transform = transform
-        self.target_transform = target_transform
 
         # 初始化COCO对象
         self.coco = COCO(annFile)
@@ -118,26 +108,28 @@ class CocoYoloDataset(Dataset):
     def __len__(self) -> int:
         return self.length
 
-    def __getitem__(self, index: int) -> Tuple[torch.Tensor, np.ndarray]:
+    def __getitem__(self, index: int) -> Tuple[np.ndarray, np.ndarray]:
         index = index % self.length
         img_id = self.image_ids[index]
 
         # 训练时进行数据的随机增强，验证时不进行数据的随机增强
-        if (self.mosaic and self.rand() < self.mosaic_prob and
-            self.epoch_now < self.epoch_length * self.special_aug_ratio):
-
-            # Mosaic增强
+        use_mosaic = (
+            self.mosaic
+            and rand_uniform() < self.mosaic_prob
+            and self.epoch_now < self.epoch_length * self.special_aug_ratio
+        )
+        if use_mosaic:
             sample_indices = random.sample(range(self.length), 3)
             sample_indices.append(index)
             sample_img_ids = [self.image_ids[i] for i in sample_indices]
 
             image, boxes = self.get_random_data_with_mosaic(sample_img_ids, self.input_size)
 
-            if self.mixup and self.rand() < self.mixup_prob:
+            if self.mixup and rand_uniform() < self.mixup_prob:
                 mixup_idx = random.randint(0, self.length - 1)
                 mixup_img_id = self.image_ids[mixup_idx]
                 image_2, boxes_2 = self.get_random_data(mixup_img_id, self.input_size, random=self.train)
-                image, boxes = self.get_random_data_with_mixup(image, boxes, image_2, boxes_2)
+                image, boxes = mixup_images(image, boxes, image_2, boxes_2)
         else:
             image, boxes = self.get_random_data(img_id, self.input_size, random=self.train)
 
@@ -152,11 +144,7 @@ class CocoYoloDataset(Dataset):
             boxes[:, 2:4] = boxes[:, 2:4] - boxes[:, 0:2]  # width, height
             boxes[:, 0:2] = boxes[:, 0:2] + boxes[:, 2:4] / 2  # center_x, center_y
 
-        return torch.from_numpy(image), boxes
-
-    def rand(self, a: float = 0, b: float = 1) -> float:
-        """生成随机数"""
-        return np.random.rand() * (b - a) + a
+        return image, boxes
 
     def get_image_and_annotations(self, img_id: int) -> Tuple[Image.Image, np.ndarray]:
         """获取图像和对应的标注"""
@@ -192,157 +180,60 @@ class CocoYoloDataset(Dataset):
         sat: float = 0.7,
         val: float = 0.4,
         random: bool = True,
-    ) -> Tuple[Image.Image, np.ndarray]:
-        """
-        随机数据增强，完全复用原有的逻辑！
-        """
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """随机数据增强或验证阶段的letterbox预处理。"""
         image, box = self.get_image_and_annotations(img_id)
 
         if not random:
-            # 验证模式：只进行resize和padding
-            iw, ih = image.size
-            h, w = input_size, input_size
-            scale = min(w / iw, h / ih)
-            nw = int(iw * scale)
-            nh = int(ih * scale)
-            dx = (w - nw) // 2
-            dy = (h - nh) // 2
+            return letterbox_image(image, box, input_size)
 
-            image = image.resize((nw, nh), Image.BICUBIC)
-            new_image = Image.new("RGB", (w, h), (128, 128, 128))
-            new_image.paste(image, (dx, dy))
-            image_data = np.array(new_image, np.float32)
-
-            if len(box) > 0:
-                np.random.shuffle(box)
-                box[:, [0, 2]] = box[:, [0, 2]] * nw / iw + dx
-                box[:, [1, 3]] = box[:, [1, 3]] * nh / ih + dy
-                box[:, 0:2][box[:, 0:2] < 0] = 0
-                box[:, 2][box[:, 2] > w] = w
-                box[:, 3][box[:, 3] > h] = h
-                box_w = box[:, 2] - box[:, 0]
-                box_h = box[:, 3] - box[:, 1]
-                box = box[np.logical_and(box_w > 1, box_h > 1)]
-
-            return image_data, box
-
-        # 训练模式：完整的数据增强
-        iw, ih = image.size
-        h, w = input_size, input_size
-
-        # 长宽比扭曲和缩放
-        new_ar = (iw / ih * self.rand(1 - jitter, 1 + jitter) /
-                  self.rand(1 - jitter, 1 + jitter))
-        scale = self.rand(0.25, 2)
-        if new_ar < 1:
-            nh = int(scale * h)
-            nw = int(nh * new_ar)
-        else:
-            nw = int(scale * w)
-            nh = int(nw / new_ar)
-        image = image.resize((nw, nh), Image.BICUBIC)
-
-        # 随机放置
-        dx = int(self.rand(0, w - nw))
-        dy = int(self.rand(0, h - nh))
-        new_image = Image.new("RGB", (w, h), (128, 128, 128))
-        new_image.paste(image, (dx, dy))
-        image = new_image
-
-        # 随机翻转
-        flip = self.rand() < 0.5
-        if flip:
-            image = image.transpose(Image.FLIP_LEFT_RIGHT)
-
-        image_data = np.array(image, np.uint8)
-
-        # 色域变换
-        r = np.random.uniform(-1, 1, 3) * [hue, sat, val] + 1
-        hue, sat, val = cv2.split(cv2.cvtColor(image_data, cv2.COLOR_RGB2HSV))
-        dtype = image_data.dtype
-
-        x = np.arange(0, 256, dtype=r.dtype)
-        lut_hue = ((x * r[0]) % 180).astype(dtype)
-        lut_sat = np.clip(x * r[1], 0, 255).astype(dtype)
-        lut_val = np.clip(x * r[2], 0, 255).astype(dtype)
-
-        image_data = cv2.merge(
-            (cv2.LUT(hue, lut_hue), cv2.LUT(sat, lut_sat), cv2.LUT(val, lut_val))
-        )
-        image_data = cv2.cvtColor(image_data, cv2.COLOR_HSV2RGB)
-
-        # 调整边界框
-        if len(box) > 0:
+        if box.size > 0:
+            box = box.copy()
             np.random.shuffle(box)
-            box[:, [0, 2]] = box[:, [0, 2]] * nw / iw + dx
-            box[:, [1, 3]] = box[:, [1, 3]] * nh / ih + dy
-            if flip:
-                box[:, [0, 2]] = w - box[:, [2, 0]]
-            box[:, 0:2][box[:, 0:2] < 0] = 0
-            box[:, 2][box[:, 2] > w] = w
-            box[:, 3][box[:, 3] > h] = h
-            box_w = box[:, 2] - box[:, 0]
-            box_h = box[:, 3] - box[:, 1]
-            box = box[np.logical_and(box_w > 1, box_h > 1)]
 
+        resized, iw, ih, nw, nh = resize_with_jitter(
+            image, input_size, jitter, (0.25, 2), rand_uniform
+        )
+        dx = int(rand_uniform(0, input_size - nw))
+        dy = int(rand_uniform(0, input_size - nh))
+
+        flip = rand_uniform() < 0.5
+        if flip:
+            resized = resized.transpose(Image.FLIP_LEFT_RIGHT)
+
+        image_data = place_on_canvas(resized, input_size, input_size, dx, dy)
+        image_data = apply_hsv_augmentation(image_data, hue, sat, val)
+
+        box = adjust_boxes(box, iw, ih, nw, nh, dx, dy, input_size, input_size, flip)
         return image_data, box
 
     def get_random_data_with_mosaic(
         self, img_ids: List[int], input_size: int, jitter: float = 0.3,
         hue: float = 0.1, sat: float = 0.7, val: float = 0.4
     ) -> Tuple[np.ndarray, List[np.ndarray]]:
-        """Mosaic数据增强，完全复用原有逻辑！"""
+        """Mosaic数据增强。"""
         h, w = input_size, input_size
-        min_offset_x = self.rand(0.3, 0.7)
-        min_offset_y = self.rand(0.3, 0.7)
+        min_offset_x = rand_uniform(0.3, 0.7)
+        min_offset_y = rand_uniform(0.3, 0.7)
 
-        image_datas = []
-        box_datas = []
+        image_datas: List[np.ndarray] = []
+        box_datas: List[np.ndarray] = []
 
         for i, img_id in enumerate(img_ids):
-            image, box = self.get_random_data(img_id, input_size, random=False)
+            image, box = self.get_image_and_annotations(img_id)
+            if box.size > 0:
+                box = box.copy()
+                np.random.shuffle(box)
+            resized, iw, ih, nw, nh = resize_with_jitter(
+                image, input_size, jitter, (0.4, 1), rand_uniform
+            )
 
-            # 获取原始图像信息用于Mosaic
-            img_info = self.img_info_cache[img_id]
-            iw, ih = img_info['width'], img_info['height']
-
-            # 重新读取原始图像进行Mosaic处理
-            image_path = f"{self.root}/{img_info['file_name']}"
-            image = Image.open(image_path)
-            image = cvtColor(image)
-
-            # 重新获取标注
-            ann_ids = self.coco.getAnnIds(imgIds=img_id, catIds=self.category_ids)
-            annotations = self.coco.loadAnns(ann_ids)
-            boxes = []
-            for ann in annotations:
-                if ann['area'] > 0:
-                    yolo_target = create_yolo_target_from_coco(
-                        ann, (iw, ih), self.category_to_class
-                    )
-                    if yolo_target is not None:
-                        boxes.append(yolo_target)
-            box = np.array(boxes) if boxes else np.array([])
-
-            # 翻转处理
-            flip = self.rand() < 0.5
-            if flip and len(box) > 0:
-                image = image.transpose(Image.FLIP_LEFT_RIGHT)
+            flip = rand_uniform() < 0.5
+            if flip and box.size > 0:
+                resized = resized.transpose(Image.FLIP_LEFT_RIGHT)
+                box = box.copy()
                 box[:, [0, 2]] = iw - box[:, [2, 0]]
 
-            # 缩放处理
-            new_ar = (iw / ih * self.rand(1 - jitter, 1 + jitter) /
-                      self.rand(1 - jitter, 1 + jitter))
-            scale = self.rand(0.4, 1)
-            if new_ar < 1:
-                nh = int(scale * h)
-                nw = int(nh * new_ar)
-            else:
-                nw = int(scale * w)
-                nh = int(nw / new_ar)
-            image = image.resize((nw, nh), Image.BICUBIC)
-
-            # 四个位置放置
             if i == 0:
                 dx = int(w * min_offset_x) - nw
                 dy = int(h * min_offset_y) - nh
@@ -352,127 +243,30 @@ class CocoYoloDataset(Dataset):
             elif i == 2:
                 dx = int(w * min_offset_x)
                 dy = int(h * min_offset_y)
-            elif i == 3:
+            else:
                 dx = int(w * min_offset_x)
                 dy = int(h * min_offset_y) - nh
 
-            new_image = Image.new("RGB", (w, h), (128, 128, 128))
-            new_image.paste(image, (dx, dy))
-            image_data = np.array(new_image)
-
-            # 处理边界框
-            box_data = []
-            if len(box) > 0:
-                np.random.shuffle(box)
-                box[:, [0, 2]] = box[:, [0, 2]] * nw / iw + dx
-                box[:, [1, 3]] = box[:, [1, 3]] * nh / ih + dy
-                box[:, 0:2][box[:, 0:2] < 0] = 0
-                box[:, 2][box[:, 2] > w] = w
-                box[:, 3][box[:, 3] > h] = h
-                box_w = box[:, 2] - box[:, 0]
-                box_h = box[:, 3] - box[:, 1]
-                box = box[np.logical_and(box_w > 1, box_h > 1)]
-                box_data = np.zeros((len(box), 5))
-                box_data[: len(box)] = box
+            image_data = place_on_canvas(resized, w, h, dx, dy)
+            box_adjusted = adjust_boxes(box, iw, ih, nw, nh, dx, dy, w, h, flip)
+            box_data = np.zeros((len(box_adjusted), 5))
+            if len(box_adjusted):
+                box_data[: len(box_adjusted)] = box_adjusted
 
             image_datas.append(image_data)
             box_datas.append(box_data)
 
-        # 合并四张图片
         cutx = int(w * min_offset_x)
         cuty = int(h * min_offset_y)
 
-        new_image = np.zeros([h, w, 3])
+        new_image = np.zeros([h, w, 3], dtype=np.uint8)
         new_image[:cuty, :cutx, :] = image_datas[0][:cuty, :cutx, :]
         new_image[cuty:, :cutx, :] = image_datas[1][cuty:, :cutx, :]
         new_image[cuty:, cutx:, :] = image_datas[2][cuty:, cutx:, :]
         new_image[:cuty, cutx:, :] = image_datas[3][:cuty, cutx:, :]
 
-        new_image = np.array(new_image, np.uint8)
-
-        # 色域变换
-        r = np.random.uniform(-1, 1, 3) * [hue, sat, val] + 1
-        hue, sat, val = cv2.split(cv2.cvtColor(new_image, cv2.COLOR_RGB2HSV))
-        dtype = new_image.dtype
-
-        x = np.arange(0, 256, dtype=r.dtype)
-        lut_hue = ((x * r[0]) % 180).astype(dtype)
-        lut_sat = np.clip(x * r[1], 0, 255).astype(dtype)
-        lut_val = np.clip(x * r[2], 0, 255).astype(dtype)
-
-        new_image = cv2.merge(
-            (cv2.LUT(hue, lut_hue), cv2.LUT(sat, lut_sat), cv2.LUT(val, lut_val))
-        )
-        new_image = cv2.cvtColor(new_image, cv2.COLOR_HSV2RGB)
-
-        # 合并边界框
-        new_boxes = self.merge_bboxes(box_datas, cutx, cuty)
-
-        return new_image, new_boxes
-
-    def merge_bboxes(self, bboxes: List[np.ndarray], cutx: int, cuty: int) -> List[np.ndarray]:
-        """合并Mosaic的边界框，复用原有逻辑！"""
-        merge_bbox = []
-        for i in range(len(bboxes)):
-            for box in bboxes[i]:
-                if len(box) == 0:
-                    continue
-
-                tmp_box = []
-                x1, y1, x2, y2 = box[0], box[1], box[2], box[3]
-
-                if i == 0:
-                    if y1 > cuty or x1 > cutx:
-                        continue
-                    if y2 >= cuty and y1 <= cuty:
-                        y2 = cuty
-                    if x2 >= cutx and x1 <= cutx:
-                        x2 = cutx
-
-                if i == 1:
-                    if y2 < cuty or x1 > cutx:
-                        continue
-                    if y2 >= cuty and y1 <= cuty:
-                        y1 = cuty
-                    if x2 >= cutx and x1 <= cutx:
-                        x2 = cutx
-
-                if i == 2:
-                    if y2 < cuty or x2 < cutx:
-                        continue
-                    if y2 >= cuty and y1 <= cuty:
-                        y1 = cuty
-                    if x2 >= cutx and x1 <= cutx:
-                        x1 = cutx
-
-                if i == 3:
-                    if y1 > cuty or x2 < cutx:
-                        continue
-                    if y2 >= cuty and y1 <= cuty:
-                        y2 = cuty
-                    if x2 >= cutx and x1 <= cutx:
-                        x1 = cutx
-
-                tmp_box.extend([x1, y1, x2, y2, box[4]])
-                merge_bbox.append(tmp_box)
-        return merge_bbox
-
-    def get_random_data_with_mixup(
-        self, image_1: np.ndarray, box_1: List, image_2: np.ndarray, box_2: List
-    ) -> Tuple[np.ndarray, List]:
-        """MixUp数据增强，复用原有逻辑！"""
-        new_image = (np.array(image_1, np.float32) * 0.5 +
-                    np.array(image_2, np.float32) * 0.5)
-
-        def to_box_array(box):
-            arr = np.asarray(box, dtype=np.float32)
-            if arr.size == 0:
-                return np.zeros((0, 5), dtype=np.float32)
-            return arr.reshape(-1, 5)
-
-        box_1_arr = to_box_array(box_1)
-        box_2_arr = to_box_array(box_2)
-        new_boxes = np.concatenate([box_1_arr, box_2_arr], axis=0)
+        new_image = apply_hsv_augmentation(new_image, hue, sat, val)
+        new_boxes = merge_bboxes(box_datas, cutx, cuty)
 
         return new_image, new_boxes
 
@@ -482,22 +276,6 @@ class CocoYoloDataset(Dataset):
             return [self.class_mapping[cat_id] for cat_id in self.category_ids]
         else:
             return list(self.class_mapping.values())
-
-
-def coco_dataset_collate(batch: List) -> Tuple[torch.Tensor, List[torch.Tensor]]:
-    """
-    COCO数据集的collate函数，与原有函数兼容
-    """
-    images = []
-    bboxes = []
-    for img, box in batch:
-        images.append(img)
-        bboxes.append(box)
-
-    images = torch.from_numpy(np.array(images)).type(torch.FloatTensor)
-    bboxes = [torch.from_numpy(ann).type(torch.FloatTensor) for ann in bboxes]
-
-    return images, bboxes
 
 
 if __name__ == "__main__":

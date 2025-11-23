@@ -8,9 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
 import torch
-import torch.backends.cudnn as cudnn
 from PIL import Image
 from timm.data.mixup import Mixup
 from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
@@ -20,19 +18,12 @@ from timm.utils import ModelEmaV3
 from datasets import build_dataset, build_transform
 from engine import evaluate, train_one_epoch
 from optim_factory import create_optimizer
-from utils.utils import (
-    NativeScalerWithGradNormCount as NativeScaler,
-    TensorboardLogger,
-    WandbLogger,
-    RASampler,
-    auto_load_model,
-    cosine_scheduler,
-    get_rank,
-    get_world_size,
-    init_distributed_mode,
-    is_main_process,
-    save_model,
-)
+from utils.metrics import NativeScalerWithGradNormCount as NativeScaler
+from utils.loggers import TensorboardLogger, WandbLogger
+from utils.sampler import RASampler
+from utils.checkpoint import auto_load_model, save_model
+from utils.scheduler import cosine_scheduler
+from utils.runtime import get_rank, get_world_size, is_main_process, setup_runtime
 
 
 @dataclass
@@ -124,16 +115,6 @@ def get_args_parser():
     parser.add_argument('--wandb_ckpt', action='store_true', help="将模型检查点保存为W&B工件 (默认: 关闭)")
 
     return parser
-
-def setup(args):
-    """初始化分布式模式和随机种子"""
-    init_distributed_mode(args)
-    device = torch.device(args.device)
-    seed = args.seed + get_rank()
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    cudnn.benchmark = True
-    return device
 
 
 def create_val_loader(dataset, args):
@@ -449,7 +430,7 @@ def move_mode(args, device):
 
 def main(args):
     """模式分发主入口"""
-    device = setup(args)
+    device = setup_runtime(args)
     print(args)
     mode_runner = {
         "train": train_mode,

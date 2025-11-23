@@ -66,34 +66,6 @@ def get_coco_class_mapping(coco_annotation_path: str) -> Dict[int, str]:
     return class_mapping
 
 
-def filter_coco_annotations(
-    coco: COCO,
-    image_ids: List[int],
-    category_ids: List[int] = None
-) -> Dict[int, List[Dict]]:
-    """
-    过滤COCO标注，只保留指定图片和类别的标注
-
-    Args:
-        coco: COCO对象
-        image_ids: 图片ID列表
-        category_ids: 类别ID列表，如果为None则保留所有类别
-
-    Returns:
-        过滤后的标注字典 {image_id: [annotations]}
-    """
-    filtered_annotations = {}
-
-    for img_id in image_ids:
-        ann_ids = coco.getAnnIds(imgIds=img_id, catIds=category_ids)
-        anns = coco.loadAnns(ann_ids)
-
-        if anns:  # 只保留有标注的图片
-            filtered_annotations[img_id] = anns
-
-    return filtered_annotations
-
-
 def validate_coco_annotations(coco_annotation_path: str) -> Tuple[bool, str]:
     """
     验证COCO标注文件的完整性

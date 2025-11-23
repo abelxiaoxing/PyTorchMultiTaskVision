@@ -1,11 +1,13 @@
 import math
+import time
 from typing import Iterable, Optional
+
 import torch
 from timm.data import Mixup
 from timm.utils import accuracy, ModelEmaV3
 from rich.progress import Progress
-import utils.utils as utils
-import time
+
+from utils.metrics import MetricLogger, SmoothedValue, calculate_precision_recall
 
 def update_metrics(preds, targets, true_positives, false_positives, false_negatives):
     num_classes = len(true_positives)
@@ -22,7 +24,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     num_training_steps_per_epoch=None, update_freq=None, use_amp=False,num_classes=2):
 
     model.train(True)
-    metric_logger = utils.MetricLogger(delimiter="  ")
+    metric_logger = MetricLogger(delimiter="  ")
     optimizer.zero_grad()
     start_time = time.time()
     true_positives = [0] * num_classes
@@ -140,7 +142,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     print(f"Averaged stats:{metric_logger},Time:{end_time - start_time}")
 
     # Calculate and print precision and recall for each class
-    utils.calculate_precision_recall(true_positives, false_positives, false_negatives, num_classes)
+    calculate_precision_recall(true_positives, false_positives, false_negatives, num_classes)
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
@@ -153,12 +155,12 @@ def evaluate(data_loader, model, device, num_classes, use_amp=False):
     false_positives = [0] * num_classes
     false_negatives = [0] * num_classes
 
-    metric_logger = utils.MetricLogger(delimiter="  ")
+    metric_logger = MetricLogger(delimiter="  ")
     header = 'Val:'
 
     # 添加平均精确率和召回率的 Meter 对象
-    metric_logger.add_meter('avg_precision', utils.SmoothedValue(window_size=1, fmt='{value:.5f}'))
-    metric_logger.add_meter('avg_recall', utils.SmoothedValue(window_size=1, fmt='{value:.5f}'))
+    metric_logger.add_meter('avg_precision', SmoothedValue(window_size=1, fmt='{value:.5f}'))
+    metric_logger.add_meter('avg_recall', SmoothedValue(window_size=1, fmt='{value:.5f}'))
 
     # 切换到评估模式
     model.eval()
@@ -191,7 +193,7 @@ def evaluate(data_loader, model, device, num_classes, use_amp=False):
     metric_logger.synchronize_between_processes()
 
     # 计算并打印每类的精确率和召回率
-    precision_recall_results = utils.calculate_precision_recall(true_positives, false_positives, false_negatives, num_classes)
+    precision_recall_results = calculate_precision_recall(true_positives, false_positives, false_negatives, num_classes)
     
     total_precision = sum([pr[0] for pr in precision_recall_results])
     total_recall = sum([pr[1] for pr in precision_recall_results])
