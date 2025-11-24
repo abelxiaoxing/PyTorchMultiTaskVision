@@ -1,3 +1,84 @@
+# PyTorchMultiTaskVision 环境同步指南
+
+## 快速开始
+
+### 环境要求
+- Python >= 3.12
+- CUDA >= 11.8
+- Git
+
+### 环境同步步骤
+
+本项目使用uv包管理器进行环境管理，并需要手动安装NVIDIA apex包。请按照以下步骤操作：
+
+#### 第一步：同步基础环境（使用阿里源）
+```bash
+# 使用uv同步基础环境（会自动使用阿里源）
+uv sync
+```
+
+#### 第二步：安装NVIDIA apex包
+```bash
+# 克隆NVIDIA apex仓库
+git clone https://github.com/NVIDIA/apex
+
+# 激活虚拟环境并安装apex
+source .venv/bin/activate
+cd apex
+python setup.py install --cpp_ext --cuda_ext
+
+```
+
+### 包源配置
+本项目已配置使用以下镜像源：
+- **主源**：阿里云镜像 https://mirrors.aliyun.com/pypi/simple/
+- **PyTorch源**：PyTorch官方CUDA 13.0源 https://download.pytorch.org/whl/cu130
+
+
+## 项目简介
+
+PyTorchMultiTaskVision是一个基于PyTorch的深度学习多任务视觉框架，支持图像分类、目标检测等多种视觉任务。本项目采用模块化设计，易于扩展和维护。
+
+### 主要特性
+- 🚀 支持多GPU训练
+- 📊 集成TensorBoard可视化
+- 🔄 自动数据划分和类别统计
+- 🎯 支持多种优化器和调度器
+- 📈 支持模型EMA（指数移动平均）
+- 🔧 支持模型转换（ONNX、TensorRT等）
+- 🎨 丰富的数据增强策略
+- 📋 详细的训练日志和指标记录
+
+### 项目结构
+```
+PyTorchMultiTaskVision/
+├── configs/          # 配置文件
+├── datasets/         # 数据集处理
+├── engine/           # 训练引擎
+├── models/           # 模型定义
+├── utils/            # 工具函数
+├── apex/            # NVIDIA apex（需要手动安装）
+├── train.py         # 训练脚本
+├── val.py           # 验证脚本
+├── uv_sync_step1.sh # 环境同步第一步脚本
+├── uv_sync_step2.sh # 环境同步第二步脚本
+├── pyproject.toml   # 项目配置
+└── README.md        # 项目说明
+```
+
+### 快捷命令参考（纯uv版本）
+```bash
+# 环境同步（推荐方式）
+./uv_sync_step1.sh  # 第一步：使用uv sync安装基础依赖
+./uv_sync_step2.sh  # 第二步：安装NVIDIA apex包
+
+# 或者直接使用uv命令
+uv sync              # 安装基础依赖（使用阿里源）
+# 然后手动安装apex：git clone + python setup.py install
+```
+
+---
+
 ## 更新说明
 ### 20250730
 + 大幅简化了engine和datasets代码结构，移除了重复代码和冗余循环。

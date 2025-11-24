@@ -48,9 +48,29 @@ def save_model(
             os.remove(old_ckpt)
 
 
-def auto_load_model(args, model_without_ddp, optimizer, loss_scaler, model_ema=None):
-    output_dir = Path(getattr(args, "output_dir", "./train_cls/output"))
-    if getattr(args, "auto_resume", False) and len(getattr(args, "resume", "")) == 0:
+def auto_load_model(
+    checkpoint_cfg,
+    model_without_ddp,
+    optimizer,
+    loss_scaler,
+    model_ema=None,
+    model_ema_enabled=False,
+    output_dir=None,
+):
+    """
+    如果可用，恢复最新的检查点。
+
+    参数:
+        checkpoint_cfg: 包含resume/auto_resume/start_epoch字段的配置对象
+        model_without_ddp: 要加载权重的模型
+        optimizer: 要恢复的优化器
+        loss_scaler: AMP缩放器（可选）
+        model_ema: EMA包装器（可选）
+        model_ema_enabled: 是否应该恢复EMA权重
+        output_dir: 覆盖检查点目录；回退到checkpoint_cfg.output_dir或train_cls/output
+    """
+    output_dir = Path(output_dir or getattr(checkpoint_cfg, "output_dir", "./train_cls/output"))
+    if getattr(checkpoint_cfg, "auto_resume", False) and len(getattr(checkpoint_cfg, "resume", "")) == 0:
         all_checkpoints = glob.glob(os.path.join(output_dir, 'checkpoint-*.pth'))
         latest_ckpt = -1
         for ckpt in all_checkpoints:
@@ -58,16 +78,16 @@ def auto_load_model(args, model_without_ddp, optimizer, loss_scaler, model_ema=N
             if t.isdigit():
                 latest_ckpt = max(int(t), latest_ckpt)
         if latest_ckpt >= 0:
-            args.resume = os.path.join(output_dir, 'checkpoint-%d.pth' % latest_ckpt)
-        print("Auto resume checkpoint: %s" % args.resume)
+            checkpoint_cfg.resume = os.path.join(output_dir, 'checkpoint-%d.pth' % latest_ckpt)
+        print("自动恢复检查点: %s" % getattr(checkpoint_cfg, 'resume', ''))
 
-    if getattr(args, "resume", ""):
-        if args.resume.startswith('https'):
-            checkpoint = torch.hub.load_state_dict_from_url(args.resume, map_location='cpu', check_hash=True)
+    if getattr(checkpoint_cfg, "resume", ""):
+        if checkpoint_cfg.resume.startswith('https'):
+            checkpoint = torch.hub.load_state_dict_from_url(checkpoint_cfg.resume, map_location='cpu', check_hash=True)
             state_dict = checkpoint["model"]
         else:
-            print(args.resume)
-            checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)
+            print(checkpoint_cfg.resume)
+            checkpoint = torch.load(checkpoint_cfg.resume, map_location='cpu', weights_only=False)
             raw_model = checkpoint["model"]
             if isinstance(raw_model, torch.nn.Module):
                 state_dict = raw_model.state_dict()
@@ -83,13 +103,13 @@ def auto_load_model(args, model_without_ddp, optimizer, loss_scaler, model_ema=N
             if k in model_state_dict and v.shape == model_state_dict[k].shape:
                 new_state_dict[k] = v
             else:
-                print(f"Skipping mismatched key: {k}")
+                print(f"跳过不匹配的键: {k}")
                 missing_nums += 1
 
         model_without_ddp.load_state_dict(new_state_dict, strict=False)
-        print("Resume checkpoint %s" % args.resume)
+        print("恢复检查点 %s" % checkpoint_cfg.resume)
 
-        if getattr(args, "model_ema", False):
+        if model_ema_enabled:
             if 'model_ema' in checkpoint.keys() and missing_nums == 0:
                 model_ema.module.load_state_dict(checkpoint['model_ema'])
             else:
@@ -98,13 +118,14 @@ def auto_load_model(args, model_without_ddp, optimizer, loss_scaler, model_ema=N
         if 'optimizer' in checkpoint and 'epoch' in checkpoint and missing_nums == 0:
             optimizer.load_state_dict(checkpoint['optimizer'])
             if not isinstance(checkpoint['epoch'], str):
-                args.start_epoch = checkpoint['epoch'] + 1
+                if hasattr(checkpoint_cfg, "start_epoch"):
+                    checkpoint_cfg.start_epoch = checkpoint['epoch'] + 1
             else:
-                assert getattr(args, "eval", False), 'Does not support resuming with checkpoint-best'
+                assert getattr(checkpoint_cfg, "eval", False), '不支持使用checkpoint-best恢复'
 
             if 'scaler' in checkpoint and loss_scaler is not None:
                 loss_scaler.load_state_dict(checkpoint['scaler'])
-            print("With optim & sched!")
+            print("包含优化器和调度器!")
     return
 
 
@@ -144,13 +165,13 @@ def load_state_dict(model, state_dict, prefix='', ignore_missing="relative_posit
     missing_keys = warn_missing_keys
 
     if len(missing_keys) > 0:
-        print("Weights of {} not initialized from pretrained model: {}".format(
+        print("{}的权重未从预训练模型初始化: {}".format(
             model.__class__.__name__, missing_keys))
     if len(unexpected_keys) > 0:
-        print("Weights from pretrained model not used in {}: {}".format(
+        print("预训练模型中的权重在{}中未使用: {}".format(
             model.__class__.__name__, unexpected_keys))
     if len(ignore_missing_keys) > 0:
-        print("Ignored weights of {} not initialized from pretrained model: {}".format(
+        print("忽略的{}权重未从预训练模型初始化: {}".format(
             model.__class__.__name__, ignore_missing_keys))
     if len(error_msgs) > 0:
         print('\n'.join(error_msgs))

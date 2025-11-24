@@ -1,4 +1,5 @@
 # Repository Guidelines
+始终用中文回答
 
 ## 项目结构与模块
 - 入口：`train_cls.py`（分类，timm 模型、EMA、mixup/cutmix）、`train_det.py`（YOLO 风格 COCO 检测）；`modelchange.py` 负责 ONNX/TRT/EMA 权重互转。
@@ -10,7 +11,7 @@
 - 单卡分类：`python train_cls.py --data_path /path/to/data --epochs 30 --model convnextv2_tiny.fcmae_ft_in22k_in1k`。
 - 多卡分类：`torchrun --nproc_per_node=8 train_cls.py --data_path /path/to/data --model_ema --batch_size 32`。
 - 仅评估：`python train_cls.py --mode eval --resume /path/to/checkpoint --data_path /path/to/val`。
-- 检测：`python -c "from train_det import train_detection; train_detection(data_path='/data/COCO2017', input_size=640, batch_size=16)"`。
+- 检测：`python -c "from train_det import train_detection; train_detection(overrides={'data': {'data_path': '/data/COCO2017'}, 'model': {'input_size': 640}, 'training': {'batch_size': 16}})"`。
 - 集群：`python run_with_submitit.py ... --job_dir /path/to/job --dist_url tcp://...`，提前确认分区、节点数。
 
 ## 代码风格与命名

@@ -141,7 +141,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     metric_logger.synchronize_between_processes()
     print(f"Averaged stats:{metric_logger},Time:{end_time - start_time}")
 
-    # Calculate and print precision and recall for each class
+    # 计算并打印每个类别的精确率和召回率
     calculate_precision_recall(true_positives, false_positives, false_negatives, num_classes)
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}

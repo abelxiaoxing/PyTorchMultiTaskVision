@@ -30,16 +30,16 @@ import numpy as np
 
 def log_average_miss_rate(precision, fp_cumsum, num_images):
     """
-        log-average miss rate:
-            Calculated by averaging miss rates at 9 evenly spaced FPPI points
-            between 10e-2 and 10e0, in log-space.
+        对数平均漏检率:
+            通过对10e-2到10e0之间的9个等间距FPPI点上的漏检率取平均值计算得出，
+            计算在对数空间中进行。
 
-        output:
-                lamr | log-average miss rate
-                mr | miss rate
-                fppi | false positives per image
+        输出:
+                lamr | 对数平均漏检率
+                mr | 漏检率
+                fppi | 每张图像的误检数
 
-        references:
+        参考文献:
             [1] Dollar, Piotr, et al. "Pedestrian Detection: An Evaluation of the
                State of the Art." Pattern Analysis and Machine Intelligence, IEEE
                Transactions on 34.4 (2012): 743 - 761.
@@ -67,14 +67,14 @@ def log_average_miss_rate(precision, fp_cumsum, num_images):
     return lamr, mr, fppi
 
 """
- throw error and exit
+ 抛出错误并退出
 """
 def error(msg):
     print(msg)
     sys.exit(0)
 
 """
- check if the number is a float between 0.0 and 1.0
+ 检查数字是否为0.0到1.0之间的浮点数
 """
 def is_float_between_0_and_1(value):
     try:
@@ -87,10 +87,9 @@ def is_float_between_0_and_1(value):
         return False
 
 """
- Calculate the AP given the recall and precision array
-    1st) We compute a version of the measured precision/recall curve with
-         precision monotonically decreasing
-    2nd) We compute the AP as the area under this curve by numerical integration.
+ 根据召回率和精确率数组计算AP值
+    1) 我们计算一个测量精度/召回曲线的版本，其中精度单调递减
+    2) 我们通过数值积分计算该曲线下的面积作为AP值
 """
 def voc_ap(rec, prec):
     """
@@ -103,31 +102,31 @@ def voc_ap(rec, prec):
     i=find(mrec(2:end)~=mrec(1:end-1))+1;
     ap=sum((mrec(i)-mrec(i-1)).*mpre(i));
     """
-    rec.insert(0, 0.0) # insert 0.0 at begining of list
-    rec.append(1.0) # insert 1.0 at end of list
+    rec.insert(0, 0.0) # 在列表开头插入0.0
+    rec.append(1.0) # 在列表末尾插入1.0
     mrec = rec[:]
-    prec.insert(0, 0.0) # insert 0.0 at begining of list
-    prec.append(0.0) # insert 0.0 at end of list
+    prec.insert(0, 0.0) # 在列表开头插入0.0
+    prec.append(0.0) # 在列表末尾插入0.0
     mpre = prec[:]
     """
-     This part makes the precision monotonically decreasing
-        (goes from the end to the beginning)
+     这部分使精度单调递减
+        (从末尾到开头)
         matlab: for i=numel(mpre)-1:-1:1
                     mpre(i)=max(mpre(i),mpre(i+1));
     """
     for i in range(len(mpre)-2, -1, -1):
         mpre[i] = max(mpre[i], mpre[i+1])
     """
-     This part creates a list of indexes where the recall changes
+     这部分创建召回率变化的索引列表
         matlab: i=find(mrec(2:end)~=mrec(1:end-1))+1;
     """
     i_list = []
     for i in range(1, len(mrec)):
         if mrec[i] != mrec[i-1]:
-            i_list.append(i) # if it was matlab would be i + 1
+            i_list.append(i) # 如果是matlab的话会是i + 1
     """
-     The Average Precision (AP) is the area under the curve
-        (numerical integration)
+     平均精度(AP)是曲线下的面积
+        (数值积分)
         matlab: ap=sum((mrec(i)-mrec(i-1)).*mpre(i));
     """
     ap = 0.0
@@ -137,18 +136,18 @@ def voc_ap(rec, prec):
 
 
 """
- Convert the lines of a file to a list
+ 将文件的行转换为列表
 """
 def file_lines_to_list(path):
-    # open txt file lines to a list
+    # 打开txt文件并将行读取到列表中
     with open(path) as f:
         content = f.readlines()
-    # remove whitespace characters like `\n` at the end of each line
+    # 移除每行末尾的空白字符，如`\n`
     content = [x.strip() for x in content]
     return content
 
 """
- Draws text in image
+ 在图像中绘制文本
 """
 def draw_text_in_image(img, text, pos, color, line_width):
     font = cv2.FONT_HERSHEY_PLAIN
@@ -165,35 +164,35 @@ def draw_text_in_image(img, text, pos, color, line_width):
     return img, (line_width + text_width)
 
 """
- Plot - adjust axes
+ 绘图 - 调整坐标轴
 """
 def adjust_axes(r, t, fig, axes):
-    # get text width for re-scaling
+    # 获取文本宽度用于重新缩放
     bb = t.get_window_extent(renderer=r)
     text_width_inches = bb.width / fig.dpi
-    # get axis width in inches
+    # 获取轴宽度（英寸）
     current_fig_width = fig.get_figwidth()
     new_fig_width = current_fig_width + text_width_inches
     propotion = new_fig_width / current_fig_width
-    # get axis limit
+    # 获取轴限制
     x_lim = axes.get_xlim()
     axes.set_xlim([x_lim[0], x_lim[1]*propotion])
 
 """
- Draw plot using Matplotlib
+ 使用Matplotlib绘制图表
 """
 def draw_plot_func(dictionary, n_classes, window_title, plot_title, x_label, output_path, to_show, plot_color, true_p_bar):
-    # sort the dictionary by decreasing value, into a list of tuples
+    # 按值降序排序字典，转换为元组列表
     sorted_dic_by_value = sorted(dictionary.items(), key=operator.itemgetter(1))
-    # unpacking the list of tuples into two lists
+    # 将元组列表解包为两个列表
     sorted_keys, sorted_values = zip(*sorted_dic_by_value)
     # 
     if true_p_bar != "":
         """
-         Special case to draw in:
-            - green -> TP: True Positives (object detected and matches ground-truth)
-            - red -> FP: False Positives (object detected but does not match ground-truth)
-            - orange -> FN: False Negatives (object not detected but present in the ground-truth)
+         特殊情况的绘制:
+            - 绿色 -> TP: 真正例 (检测到的目标且与真实标签匹配)
+            - 红色 -> FP: 假正例 (检测到的目标但与真实标签不匹配)
+            - 橙色 -> FN: 假负例 (未检测到但存在于真实标签中的目标)
         """
         fp_sorted = []
         tp_sorted = []
@@ -202,12 +201,12 @@ def draw_plot_func(dictionary, n_classes, window_title, plot_title, x_label, out
             tp_sorted.append(true_p_bar[key])
         plt.barh(range(n_classes), fp_sorted, align='center', color='crimson', label='False Positive')
         plt.barh(range(n_classes), tp_sorted, align='center', color='forestgreen', label='True Positive', left=fp_sorted)
-        # add legend
+        # 添加图例
         plt.legend(loc='lower right')
         """
-         Write number on side of bar
+         在条形图旁边写入数字
         """
-        fig = plt.gcf() # gcf - get current figure
+        fig = plt.gcf() # gcf - 获取当前图形
         axes = plt.gca()
         r = fig.canvas.get_renderer()
         for i, val in enumerate(sorted_values):
@@ -215,62 +214,62 @@ def draw_plot_func(dictionary, n_classes, window_title, plot_title, x_label, out
             tp_val = tp_sorted[i]
             fp_str_val = " " + str(fp_val)
             tp_str_val = fp_str_val + " " + str(tp_val)
-            # trick to paint multicolor with offset:
-            # first paint everything and then repaint the first number
+            # 使用偏移量绘制多颜色的技巧：
+            # 先绘制所有内容，然后重新绘制第一个数字
             t = plt.text(val, i, tp_str_val, color='forestgreen', va='center', fontweight='bold')
             plt.text(val, i, fp_str_val, color='crimson', va='center', fontweight='bold')
-            if i == (len(sorted_values)-1): # largest bar
+            if i == (len(sorted_values)-1): # 最大的条形
                 adjust_axes(r, t, fig, axes)
     else:
         plt.barh(range(n_classes), sorted_values, color=plot_color)
         """
-         Write number on side of bar
+         在条形图旁边写入数字
         """
-        fig = plt.gcf() # gcf - get current figure
+        fig = plt.gcf() # gcf - 获取当前图形
         axes = plt.gca()
         r = fig.canvas.get_renderer()
         for i, val in enumerate(sorted_values):
-            str_val = " " + str(val) # add a space before
+            str_val = " " + str(val) # 在前面添加一个空格
             if val < 1.0:
                 str_val = " {0:.2f}".format(val)
             t = plt.text(val, i, str_val, color=plot_color, va='center', fontweight='bold')
-            # re-set axes to show number inside the figure
-            if i == (len(sorted_values)-1): # largest bar
+            # 重新设置轴以在图形内显示数字
+            if i == (len(sorted_values)-1): # 最大的条形
                 adjust_axes(r, t, fig, axes)
-    # set window title
+    # 设置窗口标题
     fig.canvas.set_window_title(window_title)
-    # write classes in y axis
+    # 在y轴上写入类别
     tick_font_size = 12
     plt.yticks(range(n_classes), sorted_keys, fontsize=tick_font_size)
     """
-     Re-scale height accordingly
+     相应重新缩放高度
     """
     init_height = fig.get_figheight()
-    # comput the matrix height in points and inches
+    # 计算矩阵高度（以点和英寸为单位）
     dpi = fig.dpi
-    height_pt = n_classes * (tick_font_size * 1.4) # 1.4 (some spacing)
+    height_pt = n_classes * (tick_font_size * 1.4) # 1.4（一些间距）
     height_in = height_pt / dpi
-    # compute the required figure height 
-    top_margin = 0.15 # in percentage of the figure height
-    bottom_margin = 0.05 # in percentage of the figure height
+    # 计算所需的图形高度
+    top_margin = 0.15 # 图形高度的百分比
+    bottom_margin = 0.05 # 图形高度的百分比
     figure_height = height_in / (1 - top_margin - bottom_margin)
-    # set new height
+    # 设置新高度
     if figure_height > init_height:
         fig.set_figheight(figure_height)
 
-    # set plot title
+    # 设置绘图标题
     plt.title(plot_title, fontsize=14)
-    # set axis titles
+    # 设置轴标题
     # plt.xlabel('classes')
     plt.xlabel(x_label, fontsize='large')
-    # adjust size of window
+    # 调整窗口大小
     fig.tight_layout()
-    # save the plot
+    # 保存绘图
     fig.savefig(output_path)
-    # show image
+    # 显示图像
     if to_show:
         plt.show()
-    # close the plot
+    # 关闭绘图
     plt.close()
 
 def get_map(MINOVERLAP, draw_plot, score_threhold=0.5, path = './map_out'):
@@ -509,7 +508,7 @@ def get_map(MINOVERLAP, draw_plot, score_threhold=0.5, path = './map_out'):
                     green           = (0,255,0)
                     light_red       = (30,30,255)
                     margin          = 10
-                    # 1nd line
+                    # 第一行
                     v_pos           = int(height - margin - (bottom_border / 2.0))
                     text            = "Image: " + ground_truth_img[0] + " "
                     img, line_width = draw_text_in_image(img, text, (margin, v_pos), white, 0)
@@ -523,7 +522,7 @@ def get_map(MINOVERLAP, draw_plot, score_threhold=0.5, path = './map_out'):
                             text    = "IoU: {0:.2f}% ".format(ovmax*100) + ">= {0:.2f}% ".format(min_overlap*100)
                             color   = green
                         img, _ = draw_text_in_image(img, text, (margin + line_width, v_pos), color, line_width)
-                    # 2nd line
+                    # 第二行
                     v_pos           += int(bottom_border / 2.0)
                     rank_pos        = str(idx+1)
                     text            = "Detection #rank: " + rank_pos + " confidence: {0:.2f}% ".format(float(detection["confidence"])*100)
@@ -725,17 +724,17 @@ def get_map(MINOVERLAP, draw_plot, score_threhold=0.5, path = './map_out'):
             )
 
     # """
-    # Plot the total number of occurences of each class in the "detection-results" folder
+    # 绘制"detection-results"文件夹中每个类别的总出现次数
     # """
     # if draw_plot:
     #     window_title = "detection-results-info"
-    #     # Plot title
+    #     # 绘图标题
     #     plot_title = "detection-results\n"
-    #     plot_title += "(" + str(len(dr_files_list)) + " files and "
+    #     plot_title += "(" + str(len(dr_files_list)) + " 个文件和 "
     #     count_non_zero_values_in_dictionary = sum(int(x) > 0 for x in list(det_counter_per_class.values()))
-    #     plot_title += str(count_non_zero_values_in_dictionary) + " detected classes)"
-    #     # end Plot title
-    #     x_label = "Number of objects per class"
+    #     plot_title += str(count_non_zero_values_in_dictionary) + " 个检测到的类别)"
+    #     # 结束绘图标题
+    #     x_label = "每个类别的目标数量"
     #     output_path = RESULTS_FILES_PATH + "/detection-results-info.png"
     #     to_show = False
     #     plot_color = 'forestgreen'
@@ -753,7 +752,7 @@ def get_map(MINOVERLAP, draw_plot, score_threhold=0.5, path = './map_out'):
     #         )
 
     """
-    Draw log-average miss rate plot (Show lamr of all classes in decreasing order)
+    绘制对数平均漏检率图 (按降序显示所有类别的lamr)
     """
     if draw_plot:
         window_title = "lamr"
@@ -775,7 +774,7 @@ def get_map(MINOVERLAP, draw_plot, score_threhold=0.5, path = './map_out'):
             )
 
     """
-    Draw mAP plot (Show AP's of all classes in decreasing order)
+    绘制mAP图 (按降序显示所有类别的AP值)
     """
     if draw_plot:
         window_title = "mAP"

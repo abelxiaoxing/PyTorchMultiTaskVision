@@ -1,0 +1,51 @@
+extends = ["base.toml"]
+
+[runtime]
+device = "cuda"
+
+[logging]
+output_dir = "train_det/output"
+figure_dir = "train_det/figure"
+
+[checkpoint]
+save_ckpt_freq = 10
+
+[training]
+epochs = 100
+batch_size = 64
+eval_freq = 2
+lr_scheduler = "cosine"
+freeze_epoch = 50
+freeze_train = true
+focal_loss = false
+
+[optim]
+opt = "adamw"
+lr = 0.001
+momentum = 0.937
+weight_decay = 0.0005
+
+[model]
+backbone = "efficientvit_b0"
+pretrained = true
+input_size = 640
+anchors = [12, 16, 19, 36, 40, 28, 36, 75, 76, 55, 72, 146, 142, 110, 192, 243, 459, 401]
+anchor_mask = [[6, 7, 8], [3, 4, 5], [0, 1, 2]]
+focal_alpha = 0.25
+focal_gamma = 2.0
+
+[augmentation]
+mosaic = true
+mixup = true
+mosaic_prob = 0.5
+mixup_prob = 0.5
+special_aug_ratio = 0.7
+label_smoothing = 0.01
+
+[data]
+data_path = "../../datas/COCO2017"
+train_annotation = "annotations/instances_val2017.json"
+val_annotation = "annotations/instances_val2017.json"
+train_split = "val2017"
+val_split = "val2017"
+num_workers = 4

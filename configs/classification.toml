@@ -1,0 +1,44 @@
+extends = ["base.toml"]
+
+[runtime]
+device = "cuda"
+
+[logging]
+log_dir = "train_cls/log_dir"
+output_dir = "train_cls/output"
+
+[training]
+mode = "train"
+epochs = 30
+batch_size = 16
+update_freq = 1
+model_ema = false
+use_amp = true
+
+[model]
+name = "convnextv2_tiny.fcmae_ft_in22k_in1k"
+pretrained = true
+drop_path = 0.05
+input_size = 224
+
+[optim]
+opt = "lion"
+lr = 0.0001
+min_lr = 0.0000001
+weight_decay = 0.0005
+weight_decay_end = 0.000005
+warmup_epochs = 1
+
+[data]
+data_path = "../../datas/flower_photos"
+train_split_ratio = 0.8
+num_workers = 8
+move_dir = ""
+
+[augmentation]
+ra_sampler = false
+color_jitter = 0.1
+aa = ""
+reprob = 0.0
+mixup = 0.0
+cutmix = 0.0

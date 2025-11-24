@@ -169,10 +169,10 @@ class Conv(nn.Module):
         return self.act(self.conv(x))
 
 class Bottleneck(nn.Module):
-    # Standard bottleneck
-    def __init__(self, c1, c2, shortcut=True, g=1, e=0.5):  # ch_in, ch_out, shortcut, groups, expansion
+    # 标准瓶颈结构
+    def __init__(self, c1, c2, shortcut=True, g=1, e=0.5):  # 输入通道数, 输出通道数, 是否使用捷径连接, 分组数, 扩展系数
         super(Bottleneck, self).__init__()
-        c_ = int(c2 * e)  # hidden channels
+        c_ = int(c2 * e)  # 隐藏通道数
         self.cv1 = Conv(c1, c_, 1, 1)
         self.cv2 = Conv(c_, c2, 3, 1, g=g)
         self.add = shortcut and c1 == c2
@@ -181,10 +181,10 @@ class Bottleneck(nn.Module):
         return x + self.cv2(self.cv1(x)) if self.add else self.cv2(self.cv1(x))
 
 class C3(nn.Module):
-    # CSP Bottleneck with 3 convolutions
-    def __init__(self, c1, c2, n=1, shortcut=True, g=1, e=0.5):  # ch_in, ch_out, number, shortcut, groups, expansion
+    # 具有3个卷积的CSP瓶颈结构
+    def __init__(self, c1, c2, n=1, shortcut=True, g=1, e=0.5):  # 输入通道数, 输出通道数, 数量, 是否使用捷径连接, 分组数, 扩展系数
         super(C3, self).__init__()
-        c_ = int(c2 * e)  # hidden channels
+        c_ = int(c2 * e)  # 隐藏通道数
         self.cv1 = Conv(c1, c_, 1, 1)
         self.cv2 = Conv(c1, c_, 1, 1)
         self.cv3 = Conv(2 * c_, c2, 1)  # act=FReLU(c2)

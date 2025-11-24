@@ -1,10 +1,14 @@
-import torch
-import random
-import os
-from torchvision import datasets, transforms
-from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
-from timm.data import create_transform
 import json
+import os
+import random
+from pathlib import Path
+
+import torch
+from timm.data import create_transform
+from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+from torchvision import datasets, transforms
+
+from config import ClassificationConfig
 
 def _print_transform(transform, name):
     print(f"{name} Transform = ")
@@ -52,24 +56,25 @@ def split_dataset(root, train_ratio=0.5):
 
 
 # 构建数据集
-def build_dataset(args, eval_only=False):
-    val_transform = build_transform(False, args)
+def build_dataset(cfg: ClassificationConfig, eval_only: bool = False):
+    """Build train/val splits using the config-driven transforms and paths."""
+    val_transform = build_transform(False, cfg)
     if eval_only:
         _print_transform(val_transform, "Validation")
-        val_dataset = datasets.ImageFolder(args.data_path, transform=val_transform)
+        val_dataset = datasets.ImageFolder(cfg.data.data_path, transform=val_transform)
         num_classes = len(val_dataset.classes)
         return None, val_dataset, num_classes
 
     # 构建训练集和验证集的转换
-    train_transform = build_transform(True, args)  # 训练集转换
+    train_transform = build_transform(True, cfg)  # 训练集转换
 
     _print_transform(train_transform, "Train")
     _print_transform(val_transform, "Validation")
 
-    if args.train_split_ratio == 0:  # 如果数据集是手动设置
+    if cfg.data.train_split_ratio == 0:  # 如果数据集是手动设置
         # 手动设置训练集和验证集路径
-        train_root = os.path.join(args.data_path, "train")
-        val_root = os.path.join(args.data_path, "val")
+        train_root = os.path.join(cfg.data.data_path, "train")
+        val_root = os.path.join(cfg.data.data_path, "val")
 
         # 加载训练集和验证集
         train_dataset = datasets.ImageFolder(train_root, transform=train_transform)
@@ -78,8 +83,8 @@ def build_dataset(args, eval_only=False):
         # 获取类别索引（从训练集获取）
         class_indices = train_dataset.class_to_idx
     else:  # 如果数据集是自动生成
-        dataset_root = args.data_path
-        train_ratio = args.train_split_ratio
+        dataset_root = cfg.data.data_path
+        train_ratio = cfg.data.train_split_ratio
         train_dataset, val_dataset, class_indices = split_dataset(dataset_root, train_ratio)
 
         # 应用转换到训练集和验证集
@@ -90,30 +95,31 @@ def build_dataset(args, eval_only=False):
 
     # 将类索引保存到 JSON 文件中
     json_str = json.dumps({val: key for key, val in class_indices.items()}, indent=4)
-    with open("./train_cls/output/class_indices.json", "w") as f:
+    output_dir = Path(cfg.logging.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with open(output_dir / "class_indices.json", "w") as f:
         f.write(json_str)
     print(f"Number of the class = {num_classes}")  # 打印类别数量
     return train_dataset, val_dataset, num_classes
 
 
-def build_transform(is_train, args):
+def build_transform(is_train: bool, cfg: ClassificationConfig):
     if is_train:
         transform = create_transform(
-            input_size=args.input_size,
+            input_size=cfg.model.input_size,
             scale=(1.0, 1.0),
             ratio=(1.0, 1.0),
             is_training=True,
             vflip=0.5,
-            color_jitter=args.color_jitter,
-            auto_augment=args.aa,
+            color_jitter=cfg.augmentation.color_jitter,
+            auto_augment=cfg.augmentation.aa,
             interpolation="bicubic",
-            re_prob=args.reprob,
+            re_prob=cfg.augmentation.reprob,
         )
         return transform
     else:
         return transforms.Compose([
-            transforms.Resize([args.input_size, args.input_size]),
+            transforms.Resize([cfg.model.input_size, cfg.model.input_size]),
             transforms.ToTensor(),
             transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)
         ])
-

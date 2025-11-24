@@ -1,0 +1,22 @@
+extends = []
+
+[runtime]
+device = "cuda"
+seed = 88
+dist_url = "env://"
+dist_on_itp = false
+world_size = 1
+local_rank = -1
+
+[checkpoint]
+resume = ""
+auto_resume = false
+save_ckpt = true
+save_ckpt_freq = 1
+save_ckpt_num = 100
+start_epoch = 0
+
+[logging]
+enable_wandb = false
+project = "vision-multitask"
+wandb_ckpt = false
