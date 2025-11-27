@@ -11,6 +11,22 @@ from torchvision import datasets, transforms
 from config import ClassificationConfig
 from typing import Union, Tuple, Callable, Any
 
+
+class TransformDataset(torch.utils.data.Dataset):
+    """一个数据集包装器，用于应用转换到基础数据集。"""
+    def __init__(self, subset, transform=None):
+        self.subset = subset
+        self.transform = transform
+
+    def __getitem__(self, index):
+        x, y = self.subset[index]
+        if self.transform is not None:
+            x = self.transform(x)
+        return x, y
+
+    def __len__(self):
+        return len(self.subset)
+
 def _print_transform(transform: Any, name: str) -> None:
     print(f"{name} Transform = ")
     if isinstance(transform, tuple):
@@ -87,7 +103,9 @@ def build_dataset(cfg: ClassificationConfig, eval_only: bool = False):
         train_ratio = cfg.data.train_split_ratio
         train_dataset, val_dataset, class_indices = split_dataset(dataset_root, train_ratio)
 
-        # 应用转换到训练集和验证集 - 已经通过TransformSubset类处理
+        # 应用转换到训练集和验证集
+        train_dataset = TransformDataset(train_dataset, train_transform)
+        val_dataset = TransformDataset(val_dataset, val_transform)
     num_classes = len(class_indices)
     print("Number of the class = %d" % num_classes)  # 打印类别数量
 
