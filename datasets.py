@@ -4,13 +4,14 @@ import random
 from pathlib import Path
 
 import torch
-from timm.data import create_transform
+from timm.data.transforms_factory import create_transform
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from torchvision import datasets, transforms
 
 from config import ClassificationConfig
+from typing import Union, Tuple, Callable, Any
 
-def _print_transform(transform, name):
+def _print_transform(transform: Any, name: str) -> None:
     print(f"{name} Transform = ")
     if isinstance(transform, tuple):
         for trans in transform:
@@ -79,7 +80,6 @@ def build_dataset(cfg: ClassificationConfig, eval_only: bool = False):
         # 加载训练集和验证集
         train_dataset = datasets.ImageFolder(train_root, transform=train_transform)
         val_dataset = datasets.ImageFolder(val_root, transform=val_transform)
-        
         # 获取类别索引（从训练集获取）
         class_indices = train_dataset.class_to_idx
     else:  # 如果数据集是自动生成
@@ -87,9 +87,7 @@ def build_dataset(cfg: ClassificationConfig, eval_only: bool = False):
         train_ratio = cfg.data.train_split_ratio
         train_dataset, val_dataset, class_indices = split_dataset(dataset_root, train_ratio)
 
-        # 应用转换到训练集和验证集
-        train_dataset.dataset.transform = train_transform
-        val_dataset.dataset.transform = val_transform
+        # 应用转换到训练集和验证集 - 已经通过TransformSubset类处理
     num_classes = len(class_indices)
     print("Number of the class = %d" % num_classes)  # 打印类别数量
 
@@ -103,7 +101,7 @@ def build_dataset(cfg: ClassificationConfig, eval_only: bool = False):
     return train_dataset, val_dataset, num_classes
 
 
-def build_transform(is_train: bool, cfg: ClassificationConfig):
+def build_transform(is_train: bool, cfg: ClassificationConfig) -> Union[transforms.Compose, Any]:
     if is_train:
         transform = create_transform(
             input_size=cfg.model.input_size,

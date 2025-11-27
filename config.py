@@ -514,6 +514,9 @@ def _build_dataclass(cls: Type[T], data: Dict[str, Any]) -> T:
         >>> _build_dataclass(RuntimeConfig, data)
         RuntimeConfig(device='cuda', seed=88)
     """
+    # 类型断言：确保cls是一个数据类类型
+    assert is_dataclass(cls), f"{cls} must be a dataclass"
+    
     kwargs: Dict[str, Any] = {}
     type_hints = get_type_hints(cls)
     for field_def in fields(cls):

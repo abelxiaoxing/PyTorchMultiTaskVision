@@ -3,8 +3,9 @@ import time
 from typing import Iterable, Optional
 
 import torch
-from timm.data import Mixup
-from timm.utils import accuracy, ModelEmaV3
+from timm.data.mixup import Mixup
+from timm.utils.model_ema import ModelEmaV3
+from timm.utils.metrics import accuracy
 from rich.progress import Progress
 
 from utils.metrics import MetricLogger, SmoothedValue, calculate_precision_recall
