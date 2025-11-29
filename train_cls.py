@@ -10,9 +10,9 @@ from typing import Optional
 import torch
 from PIL import Image
 from timm.data.mixup import Mixup
-from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
+from timm.loss.cross_entropy import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 from timm.models import create_model
-from timm.utils import ModelEmaV3
+from timm.utils.model_ema import ModelEmaV3
 
 from config import ClassificationConfig, load_classification_config
 from datasets import build_dataset, build_transform
@@ -49,6 +49,7 @@ class DataLoaders:
 
 def create_val_loader(dataset, cfg: ClassificationConfig):
     """构建验证/评估 DataLoader"""
+    assert dataset is not None, "验证数据集不能为None"
     sampler_val = torch.utils.data.SequentialSampler(dataset)
     return torch.utils.data.DataLoader(
         dataset,
@@ -85,6 +86,9 @@ def build_schedulers(cfg: ClassificationConfig, steps_per_epoch: int):
 def prepare_data(cfg: ClassificationConfig):
     """准备数据集和数据加载器"""
     dataset_train, dataset_val, num_classes = build_dataset(cfg=cfg)
+    assert dataset_train is not None, "训练数据集不能为None"
+    assert dataset_val is not None, "验证数据集不能为None"
+
     sampler_train = create_train_sampler(dataset_train, cfg)
     print(f"训练采样器 = {sampler_train}")
 
@@ -239,7 +243,7 @@ def run_training_loop(cfg: ClassificationConfig, runtime, components: TrainingCo
 
     for epoch in range(cfg.checkpoint.start_epoch, cfg.training.epochs):
         if runtime.distributed:
-            data.train.sampler.set_epoch(epoch)
+            data.train.sampler.set_epoch(epoch)  # type: ignore
         if log_writer:
             log_writer.set_step(epoch * num_training_steps_per_epoch * cfg.training.update_freq)
         if wandb_logger:
@@ -247,10 +251,10 @@ def run_training_loop(cfg: ClassificationConfig, runtime, components: TrainingCo
 
         train_stats = train_one_epoch(
             components.model, components.criterion, data.train, components.optimizer, device, epoch, components.loss_scaler,
-            cfg.training.clip_grad, components.model_ema, components.mixup_fn, log_writer=log_writer, wandb_logger=wandb_logger,
+            num_training_steps_per_epoch, cfg.training.update_freq, cfg.training.clip_grad, components.model_ema,
+            components.mixup_fn, log_writer=log_writer, wandb_logger=wandb_logger,
             start_steps=epoch * num_training_steps_per_epoch, lr_schedule_values=lr_schedule_values,
-            wd_schedule_values=wd_schedule_values, num_training_steps_per_epoch=num_training_steps_per_epoch,
-            update_freq=cfg.training.update_freq, use_amp=cfg.training.use_amp, num_classes=data.num_classes
+            wd_schedule_values=wd_schedule_values, use_amp=cfg.training.use_amp, num_classes=data.num_classes
         )
 
         if (epoch + 1) % cfg.checkpoint.save_ckpt_freq == 0 or epoch + 1 == cfg.training.epochs:
@@ -365,7 +369,7 @@ def move_mode(cfg: ClassificationConfig, device):
         if not os.path.isfile(file_path):
             continue
         img = Image.open(file_path).convert("RGB")
-        img = data_transform(img).unsqueeze(0).to(device)
+        img = data_transform(img).unsqueeze(0).to(device)  # type: ignore
 
         with torch.no_grad():
             output = torch.squeeze(model(img)).cpu()

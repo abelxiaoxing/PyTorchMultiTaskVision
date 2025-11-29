@@ -3,10 +3,6 @@ extends = ["base.toml"]
 [runtime]
 device = "cuda"
 
-[logging]
-log_dir = "train_cls/log_dir"
-output_dir = "train_cls/output"
-
 [training]
 mode = "train"
 epochs = 30

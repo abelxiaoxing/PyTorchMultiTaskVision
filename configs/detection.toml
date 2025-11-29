@@ -3,10 +3,6 @@ extends = ["base.toml"]
 [runtime]
 device = "cuda"
 
-[logging]
-output_dir = "train_det/output"
-figure_dir = "train_det/figure"
-
 [checkpoint]
 save_ckpt_freq = 10
 

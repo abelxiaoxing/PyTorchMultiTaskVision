@@ -19,28 +19,29 @@ def update_metrics(preds, targets, true_positives, false_positives, false_negati
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
-                    device: torch.device, epoch: int, loss_scaler, max_norm: float = 0,
-                    model_ema: Optional[ModelEmaV3] = None, mixup_fn: Optional[Mixup] = None, log_writer=None,
-                    wandb_logger=None, start_steps=None, lr_schedule_values=None, wd_schedule_values=None,
-                    num_training_steps_per_epoch=None, update_freq=None, use_amp=False,num_classes=2):
+                    device: torch.device, epoch: int, loss_scaler, num_training_steps_per_epoch: int,
+                    update_freq: int, max_norm: Optional[float] = None, model_ema: Optional[ModelEmaV3] = None,
+                    mixup_fn: Optional[Mixup] = None, log_writer=None, wandb_logger=None, start_steps=None,
+                    lr_schedule_values=None, wd_schedule_values=None, use_amp: bool = False, num_classes: int = 2):
 
     model.train(True)
     metric_logger = MetricLogger(delimiter="  ")
     optimizer.zero_grad()
     start_time = time.time()
+    grad_norm = None  # 初始化 grad_norm 变量以避免未绑定错误
     true_positives = [0] * num_classes
     false_positives = [0] * num_classes
     false_negatives = [0] * num_classes
     with Progress() as progress:
-        task = progress.add_task(f"[green]Epoch {epoch} ", total=len(data_loader))
+        task = progress.add_task(f"[green]Epoch {epoch} ", total=len(data_loader))  # type: ignore[arg-type]
 
         for data_iter_step, (samples, targets) in enumerate(data_loader):
             progress.update(task, advance=1)
             step = data_iter_step // update_freq
             if step >= num_training_steps_per_epoch:
                 continue
-            it = start_steps + step
-            if lr_schedule_values is not None or wd_schedule_values is not None and data_iter_step % update_freq == 0:
+            it = start_steps + step if start_steps is not None else step
+            if (lr_schedule_values is not None or wd_schedule_values is not None) and data_iter_step % update_freq == 0:
                 for i, param_group in enumerate(optimizer.param_groups):
                     if lr_schedule_values is not None:
                         param_group["lr"] = lr_schedule_values[it]
@@ -57,7 +58,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 samples, targets = mixup_fn(samples, targets)
 
             if use_amp:
-                with torch.amp.autocast('cuda'):
+                with torch.cuda.amp.autocast():
                     output = model(samples)
                     loss = criterion(output, targets)
             else:
@@ -71,16 +72,16 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 optimizer.zero_grad()
                 continue
 
-            if use_amp: 
-                is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
+            if use_amp:
+                is_second_order = getattr(optimizer, 'is_second_order', False)
                 loss /= update_freq
                 grad_norm = loss_scaler(loss, optimizer, clip_grad=max_norm,parameters=model.parameters(), create_graph=is_second_order,update_grad=(data_iter_step + 1) % update_freq == 0)
                 if (data_iter_step + 1) % update_freq == 0:
                     optimizer.zero_grad()
                     if model_ema is not None:
                         model_ema.update(model)
-                        
-            else: 
+
+            else:
                 loss /= update_freq
                 loss.backward()
                 if (data_iter_step + 1) % update_freq == 0:
@@ -101,9 +102,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
             _, preds = torch.max(eval_output, 1)
             update_metrics(preds, eval_targets, true_positives, false_positives, false_negatives)
-            
+
             class_acc = (eval_output.max(-1)[-1] == eval_targets).float().mean()
-                    
+
             metric_logger.update(loss=loss_value)
             metric_logger.update(class_acc=class_acc)
             min_lr = 10.
@@ -138,7 +139,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 if use_amp:
                     wandb_logger._wandb.log({'Rank-0 Batch Wise/train_grad_norm': grad_norm}, commit=False)
                 wandb_logger._wandb.log({'Rank-0 Batch Wise/global_train_step': it})
-    end_time = time.time() 
+    end_time = time.time()
     metric_logger.synchronize_between_processes()
     print(f"Averaged stats:{metric_logger},Time:{end_time - start_time}")
 
@@ -148,7 +149,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 @torch.no_grad()
-def evaluate(data_loader, model, device, num_classes, use_amp=False):
+def evaluate(data_loader: Iterable, model: torch.nn.Module, device: torch.device,
+             num_classes: int, use_amp: bool = False):
     criterion = torch.nn.CrossEntropyLoss()
 
     # 初始化用于存储每类的真正例、假正例和假反例的计数器
@@ -195,13 +197,13 @@ def evaluate(data_loader, model, device, num_classes, use_amp=False):
 
     # 计算并打印每类的精确率和召回率
     precision_recall_results = calculate_precision_recall(true_positives, false_positives, false_negatives, num_classes)
-    
+
     total_precision = sum([pr[0] for pr in precision_recall_results])
     total_recall = sum([pr[1] for pr in precision_recall_results])
-    
+
     avg_precision = total_precision / num_classes if num_classes > 0 else 0
     avg_recall = total_recall / num_classes if num_classes > 0 else 0
-    
+
     # 更新平均精确率和召回率的 Meter 对象
     metric_logger.meters['avg_precision'].update(avg_precision)
     metric_logger.meters['avg_recall'].update(avg_recall)

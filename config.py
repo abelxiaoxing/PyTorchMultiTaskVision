@@ -6,6 +6,11 @@ import tomllib
 
 T = TypeVar("T")
 
+CLASS_LOG_DIR = "train_cls/log_dir"
+CLASS_OUTPUT_DIR = "train_cls/output"
+DET_OUTPUT_DIR = "train_det/output"
+DET_FIGURE_DIR = "train_det/figure"
+
 
 class ConfigError(Exception):
     """当配置文件无法解析为预期结构时抛出。"""
@@ -74,14 +79,14 @@ class ClassificationLoggingConfig:
         enable_wandb: 是否启用Weights & Biases实验跟踪，默认为 False
         project: WandB项目名称，默认为 "classification"
         wandb_ckpt: 是否将检查点保存到WandB，默认为 False
-        log_dir: 日志文件目录，默认为 "train_cls/log_dir"
-        output_dir: 模型输出目录，默认为 "train_cls/output"
+        log_dir: 日志文件目录，固定为 "train_cls/log_dir"
+        output_dir: 模型输出目录，固定为 "train_cls/output"
     """
     enable_wandb: bool = False
     project: str = "classification"
     wandb_ckpt: bool = False
-    log_dir: str = "train_cls/log_dir"
-    output_dir: str = "train_cls/output"
+    log_dir: str = CLASS_LOG_DIR
+    output_dir: str = CLASS_OUTPUT_DIR
 
 
 @dataclass
@@ -92,11 +97,11 @@ class DetectionLoggingConfig:
     配置目标检测任务的输出目录和可视化结果目录
 
     Attributes:
-        output_dir: 模型输出目录，默认为 "train_det/output"
-        figure_dir: 可视化图表目录，默认为 "train_det/figure"
+        output_dir: 模型输出目录，固定为 "train_det/output"
+        figure_dir: 可视化图表目录，固定为 "train_det/figure"
     """
-    output_dir: str = "train_det/output"
-    figure_dir: str = "train_det/figure"
+    output_dir: str = DET_OUTPUT_DIR
+    figure_dir: str = DET_FIGURE_DIR
 
 
 @dataclass
@@ -520,6 +525,8 @@ def _build_dataclass(cls: Type[T], data: Dict[str, Any]) -> T:
     kwargs: Dict[str, Any] = {}
     type_hints = get_type_hints(cls)
     for field_def in fields(cls):
+        if not field_def.init:
+            continue
         value = data.get(field_def.name, MISSING)
         field_type = type_hints.get(field_def.name, field_def.type)
         origin = get_origin(field_type)
