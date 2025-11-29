@@ -14,8 +14,8 @@ def fit_one_epoch(
     epoch,
     epoch_step,
     epoch_step_val,
-    gen,
-    gen_val,
+    train_loader,
+    val_loader,
     epochs,
     device,
     save_ckpt_freq,
@@ -24,7 +24,7 @@ def fit_one_epoch(
 ):
     loss = 0  # 总损失
     val_loss = 0  # 验证集损失
-    input_shape = [1,] + list(next(iter(gen))[0].shape[1:])
+    input_shape = [1,] + list(next(iter(train_loader))[0].shape[1:])
     print("开始训练")
     pbar = tqdm(
         total=epoch_step,
@@ -33,7 +33,7 @@ def fit_one_epoch(
         mininterval=0.3,
     )
     model_train.train()  # 设置模型为训练模式
-    for iteration, batch in enumerate(gen):
+    for iteration, batch in enumerate(train_loader):
         if iteration >= epoch_step:
             break
 
@@ -70,7 +70,7 @@ def fit_one_epoch(
     )
 
     model_train.eval()  # 设置模型为评估模式
-    for iteration, batch in enumerate(gen_val):
+    for iteration, batch in enumerate(val_loader):
         if iteration >= epoch_step_val:
             break
         images, targets = batch[0], batch[1]

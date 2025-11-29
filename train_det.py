@@ -183,7 +183,7 @@ def train_detection(
         special_aug_ratio=0,
     )
 
-    gen: DataLoader[CocoYoloDataset] = DataLoader(
+    train_loader: DataLoader[CocoYoloDataset] = DataLoader(
         train_dataset,
         shuffle=True,
         batch_size=cfg.training.batch_size,
@@ -192,7 +192,7 @@ def train_detection(
         drop_last=True,
         collate_fn=collate_yolo_batch,
     )
-    gen_val: DataLoader[CocoYoloDataset] = DataLoader(
+    val_loader: DataLoader[CocoYoloDataset] = DataLoader(
         val_dataset,
         shuffle=False,
         batch_size=cfg.training.batch_size,
@@ -248,8 +248,8 @@ def train_detection(
             epoch,
             epoch_step,
             epoch_step_val,
-            gen,
-            gen_val,
+            train_loader,
+            val_loader,
             cfg.training.epochs,
             device,
             save_ckpt_freq,
