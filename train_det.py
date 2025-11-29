@@ -25,46 +25,16 @@ from utils.vision import get_anchors
 from utils.yolo_transforms import collate_yolo_batch
 
 
-def apply_overrides(cfg: DetectionConfig, overrides: Dict[str, Any]) -> DetectionConfig:
-    """
-    应用参数覆盖：使用与 TOML/DetectionConfig 相同的层级结构（嵌套字典）。
 
-    示例：
-    overrides = {
-        "data": {"data_path": "/data/COCO2017"},
-        "training": {"batch_size": 16},
-        "model": {"input_size": 640},
-    }
-    """
-    def update_dataclass(target: Any, updates: Dict[str, Any], path: str = "") -> None:
-        if not is_dataclass(target):
-            raise TypeError(f"覆盖路径 {path or '<root>'} 不是配置数据类，收到: {type(target)}")
-        for key, value in updates.items():
-            if not hasattr(target, key):
-                raise ValueError(f"未知参数: {path + key}")
-            current = getattr(target, key)
-            if is_dataclass(current):
-                if not isinstance(value, dict):
-                    raise ValueError(f"参数 {path + key} 需要一个字典，匹配配置层级。")
-                update_dataclass(current, value, path=f"{path}{key}.")
-            else:
-                setattr(target, key, value)
-
-    update_dataclass(cfg, overrides)
-    return cfg
 
 
 def train_detection(
-    cfg: Optional[DetectionConfig] = None,
     config_path: Optional[str] = None,
-    overrides: Optional[Dict[str, Any]] = None,
 ):
     """
-    目标检测训练入口，使用 TOML 配置。可选 overrides 直接传入与 DetectionConfig 同结构的嵌套字典。
+    目标检测训练入口，使用 TOML 配置。
     """
-    cfg = cfg or load_detection_config(config_path)
-    if overrides:
-        cfg = apply_overrides(cfg, overrides)
+    cfg = load_detection_config(config_path)
 
     if not cfg.data.data_path:
         raise ValueError("data_path 不能为空，请提供 COCO 数据路径。")
@@ -214,7 +184,7 @@ def train_detection(
         special_aug_ratio=0,
     )
 
-    gen = DataLoader(
+    gen: DataLoader[CocoYoloDataset] = DataLoader(
         train_dataset,
         shuffle=True,
         batch_size=cfg.training.batch_size,
@@ -223,7 +193,7 @@ def train_detection(
         drop_last=True,
         collate_fn=collate_yolo_batch,
     )
-    gen_val = DataLoader(
+    gen_val: DataLoader[CocoYoloDataset] = DataLoader(
         val_dataset,
         shuffle=False,
         batch_size=cfg.training.batch_size,
@@ -265,8 +235,8 @@ def train_detection(
             epoch_step_val = num_val // cfg.training.batch_size
             unfreeze_flag = True
 
-        gen.dataset.epoch_now = epoch
-        gen_val.dataset.epoch_now = epoch
+        train_dataset.epoch_now = epoch
+        val_dataset.epoch_now = epoch
 
         set_optimizer_lr(optimizer, lr_scheduler_func, epoch)
         train_loss_avg, val_loss_avg, temp_map = fit_one_epoch(

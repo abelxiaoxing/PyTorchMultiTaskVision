@@ -11,7 +11,7 @@
 - 单卡分类：`python train_cls.py --data_path /path/to/data --epochs 30 --model convnextv2_tiny.fcmae_ft_in22k_in1k`。
 - 多卡分类：`torchrun --nproc_per_node=8 train_cls.py --data_path /path/to/data --model_ema --batch_size 32`。
 - 仅评估：`python train_cls.py --mode eval --resume /path/to/checkpoint --data_path /path/to/val`。
-- 检测：`python -c "from train_det import train_detection; train_detection(overrides={'data': {'data_path': '/data/COCO2017'}, 'model': {'input_size': 640}, 'training': {'batch_size': 16}})"`。
+- 检测：修改 `configs/detection.toml` 文件中的配置参数，然后运行 `python train_det.py --config_path configs/detection.toml`。
 - 集群：`python run_with_submitit.py ... --job_dir /path/to/job --dist_url tcp://...`，提前确认分区、节点数。
 
 ## 代码风格与命名

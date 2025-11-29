@@ -16,7 +16,7 @@ class YOLOLoss(nn.Module):
         label_smoothing=0.0,
         focal_loss=False,
         alpha=0.25,
-        gamma=2,
+        gamma=2.0,
     ):
         super(YOLOLoss, self).__init__()
         self.anchors = anchors
