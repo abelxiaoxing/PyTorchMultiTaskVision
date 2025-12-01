@@ -19,3 +19,4 @@ model_data/
 .serena/
 apex/
 .vscode/
+uv.lock

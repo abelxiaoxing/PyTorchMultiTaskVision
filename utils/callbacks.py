@@ -1,5 +1,5 @@
-import datetime
 import os
+import tempfile
 
 import torch
 import matplotlib
@@ -7,11 +7,11 @@ import matplotlib
 matplotlib.use("Agg")
 import scipy.signal
 from matplotlib import pyplot as plt
-import shutil
 import numpy as np
 
 from PIL import Image
 from tqdm import tqdm
+from pycocotools.cocoeval import COCOeval
 from .vision import cvtColor, preprocess_input, resize_image
 from .utils_bbox import DecodeBox
 from .utils_map import get_coco_map, get_map
@@ -119,7 +119,6 @@ class EvalCallback:
         figure_dir,
         device,
         val_dataset=None,
-        map_out_path=".temp_map_out",
         max_boxes=100,
         confidence=0.05,
         nms_iou=0.5,
@@ -150,8 +149,6 @@ class EvalCallback:
         # 定义设备
         self.device = device
         self.val_dataset = val_dataset
-        # 定义mAP的输出路径
-        self.map_out_path = map_out_path
         # 定义最大检测到的框数
         self.max_boxes = max_boxes
         # 定义置信度
@@ -189,43 +186,23 @@ class EvalCallback:
                 # 写入mAP为0
                 f.write(f"mAP={str(0)}\n")
 
-    def get_map_txt(self, image_id, image, class_names, map_out_path):
-        f = open(
-            os.path.join(map_out_path, "detection-results/" + image_id + ".txt"),
-            "w",
-            encoding="utf-8",
-        )
+    def _predict_image(self, image):
         image_shape = np.array(np.shape(image)[0:2])
-        # ---------------------------------------------------------#
-        #   在这里将图像转换成RGB图像，防止灰度图在预测时报错。
-        #   代码仅仅支持RGB图像的预测，所有其它类型的图像都会转化成RGB
-        # ---------------------------------------------------------#
         image = cvtColor(image)
-        # ---------------------------------------------------------#
-        #   给图像增加灰条，实现不失真的resize
-        #   也可以直接resize进行识别
-        # ---------------------------------------------------------#
         image_data = resize_image(
             image, (self.input_size, self.input_size), self.letterbox_image
         )
-        # ---------------------------------------------------------#
-        #   添加上batch_size维度
-        # ---------------------------------------------------------#
         image_data = np.expand_dims(
             np.transpose(
                 preprocess_input(np.array(image_data, dtype="float32")), (2, 0, 1)
             ),
             0,
         )
-
         with torch.no_grad():
             images = torch.from_numpy(image_data)
             images = images.to(self.device)
             outputs = self.net(images)
             outputs = self.bbox_util.decode_box(outputs)
-            # ---------------------------------------------------------#
-            #   将预测框进行堆叠，然后进行非极大抑制
-            # ---------------------------------------------------------#
             results = self.bbox_util.non_max_suppression(
                 torch.cat(outputs, 1),
                 self.num_classes,
@@ -235,9 +212,8 @@ class EvalCallback:
                 conf_thres=self.confidence,
                 nms_thres=self.nms_iou,
             )
-
             if results[0] is None:
-                return
+                return []
 
             top_label = np.array(results[0][:, 6], dtype="int32")
             top_conf = results[0][:, 4] * results[0][:, 5]
@@ -248,53 +224,103 @@ class EvalCallback:
         top_conf = top_conf[top_100]
         top_label = top_label[top_100]
 
-        for i, c in list(enumerate(top_label)):
-            predicted_class = self.class_names[int(c)]
-            box = top_boxes[i]
-            score = str(top_conf[i])
-
-            top, left, bottom, right = box
-            if predicted_class not in class_names:
-                continue
-
-            f.write(
-                "%s %s %s %s %s %s\n"
-                % (
-                    predicted_class,
-                    score[:6],
-                    str(int(left)),
-                    str(int(top)),
-                    str(int(right)),
-                    str(int(bottom)),
-                )
+        detections = []
+        for label, score, box in zip(top_label, top_conf, top_boxes):
+            detections.append(
+                {"label": int(label), "score": float(score), "bbox": box.astype(float)}
             )
+        return detections
 
-        f.close()
+    def _build_coco_detections(self, detections, image_id):
+        if self.val_dataset is None or not hasattr(self.val_dataset, "category_to_class"):
+            return []
+        class_to_category = {
+            cls_idx: cat_id for cat_id, cls_idx in self.val_dataset.category_to_class.items()
+        }
+        coco_detections = []
+        for det in detections:
+            category_id = class_to_category.get(det["label"])
+            if category_id is None:
+                continue
+            left, top, right, bottom = det["bbox"]
+            coco_detections.append(
+                {
+                    "image_id": int(image_id),
+                    "category_id": int(category_id),
+                    "bbox": [
+                        float(left),
+                        float(top),
+                        float(right - left),
+                        float(bottom - top),
+                    ],
+                    "score": float(det["score"]),
+                }
+            )
+        return coco_detections
+
+    def get_map_txt(self, image_id, image, class_names, map_out_path):
+        detections = self._predict_image(image)
+        result_path = os.path.join(map_out_path, "detection-results/" + image_id + ".txt")
+        if len(detections) == 0:
+            open(result_path, "w", encoding="utf-8").close()
+            return
+        with open(result_path, "w", encoding="utf-8") as f:
+            for det in detections:
+                predicted_class = self.class_names[int(det["label"])]
+                if predicted_class not in class_names:
+                    continue
+                top, left, bottom, right = det["bbox"]
+                score = str(det["score"])
+                f.write(
+                    "%s %s %s %s %s %s\n"
+                    % (
+                        predicted_class,
+                        score[:6],
+                        str(int(left)),
+                        str(int(top)),
+                        str(int(right)),
+                        str(int(bottom)),
+                    )
+                )
         return
 
-    def on_epoch_end(self, epoch, model_eval):
-        current_epoch = epoch + 1
-        if ((current_epoch % self.period == 0) or (current_epoch == self.num_epochs)) and self.eval_flag:
-            self.net = model_eval
-            if os.path.exists(self.map_out_path):
-                shutil.rmtree(self.map_out_path)
-            os.makedirs(self.map_out_path, exist_ok=True)
-            if not os.path.exists(os.path.join(self.map_out_path, "ground-truth")):
-                os.makedirs(os.path.join(self.map_out_path, "ground-truth"))
-            if not os.path.exists(os.path.join(self.map_out_path, "detection-results")):
-                os.makedirs(os.path.join(self.map_out_path, "detection-results"))
+    def _evaluate_in_memory_coco(self):
+        if self.val_dataset is None or not hasattr(self.val_dataset, "coco"):
+            return None
+        print("使用COCO API在内存中计算mAP50。")
+        image_ids = self.val_lines if self.val_lines else getattr(self.val_dataset, "image_ids", [])
+        coco_detections = []
+        for annotation_line in tqdm(image_ids):
+            if isinstance(annotation_line, (np.integer, int)):
+                image_id = int(annotation_line)
+            else:
+                image_id = int(annotation_line)
+            image, _ = self.val_dataset.get_image_and_annotations(image_id)
+            detections = self._predict_image(image)
+            coco_detections.extend(self._build_coco_detections(detections, image_id))
+
+        if len(coco_detections) == 0:
+            print("未检测到任何目标。")
+            return 0
+
+        coco_gt = self.val_dataset.coco
+        coco_dt = coco_gt.loadRes(coco_detections)
+        coco_eval = COCOeval(coco_gt, coco_dt, "bbox")
+        coco_eval.evaluate()
+        coco_eval.accumulate()
+        coco_eval.summarize()
+        return float(coco_eval.stats[1])
+
+    def _evaluate_with_files(self):
+        with tempfile.TemporaryDirectory() as map_out_path:
+            os.makedirs(os.path.join(map_out_path, "ground-truth"), exist_ok=True)
+            os.makedirs(os.path.join(map_out_path, "detection-results"), exist_ok=True)
             print("Get map.")
             for annotation_line in tqdm(self.val_lines):
                 if isinstance(annotation_line, str):
                     line = annotation_line.split()
                     image_id = os.path.basename(line[0]).split(".")[0]
-                    # ------------------------------#
-                    #   读取图像并转换成RGB图像
-                    # ------------------------------#
                     image = Image.open(line[0])
-                    # ------------------------------#
-                    #   获得预测框
-                    # ------------------------------#
                     gt_boxes = np.array(
                         [np.array(list(map(int, box.split(",")))) for box in line[1:]]
                     )
@@ -312,16 +338,10 @@ class EvalCallback:
                     raise TypeError(
                         "EvalCallback expects string annotation lines or a val_dataset reference."
                     )
-                # ------------------------------#
-                #   获得预测txt
-                # ------------------------------#
-                self.get_map_txt(image_id, image, self.class_names, self.map_out_path)
-                # ------------------------------#
-                #   获得真实框txt
-                # ------------------------------#
+                self.get_map_txt(image_id, image, self.class_names, map_out_path)
                 with open(
                     os.path.join(
-                        self.map_out_path, "ground-truth/" + image_id + ".txt"
+                        map_out_path, "ground-truth/" + image_id + ".txt"
                     ),
                     "w",
                 ) as new_f:
@@ -335,10 +355,20 @@ class EvalCallback:
             print("Calculate Map.")
             try:
                 temp_map = get_coco_map(
-                    class_names=self.class_names, path=self.map_out_path
+                    class_names=self.class_names, path=map_out_path
                 )[1]
             except:
-                temp_map = get_map(self.MINOVERLAP, False, path=self.map_out_path)
+                temp_map = get_map(self.MINOVERLAP, False, path=map_out_path)
+            return temp_map
+
+    def on_epoch_end(self, epoch, model_eval):
+        current_epoch = epoch + 1
+        if ((current_epoch % self.period == 0) or (current_epoch == self.num_epochs)) and self.eval_flag:
+            self.net = model_eval
+            if self.val_dataset is not None and hasattr(self.val_dataset, "coco"):
+                temp_map = self._evaluate_in_memory_coco()
+            else:
+                temp_map = self._evaluate_with_files()
             self.maps.append(temp_map)
             self.epoches.append(epoch)
 
@@ -360,5 +390,4 @@ class EvalCallback:
             plt.close("all")
 
             print("Get map done.")
-            shutil.rmtree(self.map_out_path)
             return temp_map

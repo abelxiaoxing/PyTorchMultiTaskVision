@@ -23,6 +23,7 @@ dependencies = [
     "rich>=13.0.0",
     "onnx>=1.15.0",
     "onnxruntime-gpu>=1.16.0",
+    "pyright>=1.1.407",
 ]
 
 # 注意：apex包需要手动安装，不包含在依赖列表中
@@ -40,4 +41,11 @@ explicit = true
 torch = [{ index = "pytorch-cuda130" }]
 torchvision = [{ index = "pytorch-cuda130" }]
 torchaudio = [{ index = "pytorch-cuda130" }]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.407",
+    "python-lsp-server>=1.13.2",
+    "ruff-lsp>=0.0.62",
+]
 

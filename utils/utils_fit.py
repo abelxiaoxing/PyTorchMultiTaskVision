@@ -21,6 +21,9 @@ def fit_one_epoch(
     save_ckpt_freq,
     save_dir,
     temp_map,
+    *,
+    is_main_process=True,
+    run_validation=True,
 ):
     loss = 0  # 总损失
     val_loss = 0  # 验证集损失
@@ -61,46 +64,53 @@ def fit_one_epoch(
     train_loss_avg = loss / (iteration + 1)  # 计算平均训练损失
     pbar.close()
     print("完成训练")
-    print("开始验证")
-    pbar = tqdm(
-        total=epoch_step_val,
-        desc=f"Epoch {epoch}/{epochs}",
-        postfix=dict,
-        mininterval=0.3,
-    )
 
-    model_train.eval()  # 设置模型为评估模式
-    for iteration, batch in enumerate(val_loader):
-        if iteration >= epoch_step_val:
-            break
-        images, targets = batch[0], batch[1]
-        with torch.no_grad():
-            images = images.to(device)
-            targets = [ann.to(device) for ann in targets]
-            optimizer.zero_grad()
-            outputs = model_train(images)
-            outputs = outputs[0:3]
-            loss_value_all = 0
-            for l in range(len(outputs)):
-                loss_item = yolo_loss(l, outputs[l], targets)
-                loss_value_all += loss_item
-            loss_value = loss_value_all
+    if run_validation:
+        print("开始验证")
+        pbar = tqdm(
+            total=epoch_step_val,
+            desc=f"Epoch {epoch}/{epochs}",
+            postfix=dict,
+            mininterval=0.3,
+        )
 
-        val_loss += loss_value.item()  # 累加验证集损失
-        pbar.set_postfix(**{"val_loss": val_loss / (iteration + 1)})  # 更新进度条显示
-        pbar.update(1)
-    val_loss_avg = val_loss / (iteration + 1)  # 计算平均验证集损失
+        model_train.eval()  # 设置模型为评估模式
+        for iteration, batch in enumerate(val_loader):
+            if iteration >= epoch_step_val:
+                break
+            images, targets = batch[0], batch[1]
+            with torch.no_grad():
+                images = images.to(device)
+                targets = [ann.to(device) for ann in targets]
+                optimizer.zero_grad()
+                outputs = model_train(images)
+                outputs = outputs[0:3]
+                loss_value_all = 0
+                for l in range(len(outputs)):
+                    loss_item = yolo_loss(l, outputs[l], targets)
+                    loss_value_all += loss_item
+                loss_value = loss_value_all
 
-    pbar.close()
-    print("完成验证")
-    loss_history.append_loss(
-        epoch, loss / epoch_step, val_loss / epoch_step_val
-    )  # 记录损失历史
-    temp_map = eval_callback.on_epoch_end(epoch, model_train)  # 执行回调函数
+            val_loss += loss_value.item()  # 累加验证集损失
+            pbar.set_postfix(**{"val_loss": val_loss / (iteration + 1)})  # 更新进度条显示
+            pbar.update(1)
+        val_loss_avg = val_loss / (iteration + 1)  # 计算平均验证集损失
+
+        pbar.close()
+        print("完成验证")
+        if is_main_process:
+            loss_history.append_loss(
+                epoch, loss / epoch_step, val_loss / epoch_step_val
+            )  # 记录损失历史
+            if eval_callback is not None:
+                temp_map = eval_callback.on_epoch_end(epoch, model_train)  # 执行回调函数
+    else:
+        val_loss_avg = float("nan")
+        print("跳过验证，仅主进程评估。")
     print("Epoch:" + str(epoch) + "/" + str(epochs))
     print(
         "总损失: %.3f || 验证损失: %.3f "
-        % (loss / epoch_step, val_loss / epoch_step_val)
+        % (loss / epoch_step, val_loss_avg)
     )
 
     # 保存模型权重
@@ -113,16 +123,17 @@ def fit_one_epoch(
             epoch=epoch,
         )
 
-    if len(loss_history.val_loss) <= 1 or (val_loss / epoch_step_val) <= min(
-        loss_history.val_loss
-    ):
-        print("保存最佳模型至 checkpoint-best.pth")
-        save_model(
-            output_dir=save_dir,
-            input_shape=input_shape,
-            model=model,
-            optimizer=optimizer,
-            epoch="best",
-        )
+    if is_main_process and run_validation:
+        if len(loss_history.val_loss) <= 1 or val_loss_avg <= min(
+            loss_history.val_loss
+        ):
+            print("保存最佳模型至 checkpoint-best.pth")
+            save_model(
+                output_dir=save_dir,
+                input_shape=input_shape,
+                model=model,
+                optimizer=optimizer,
+                epoch="best",
+            )
 
     return train_loss_avg, val_loss_avg, temp_map
